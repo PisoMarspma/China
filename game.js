@@ -1188,6 +1188,12 @@ class BilliardsGame extends GameBase {
     this.over = false;
     this.aiming = false;
     this.wasDown = false;
+    this.spawnPositions = {};
+    this.firstHit = null;
+    this.turnPocketed = [];
+    this.turnActive = false;
+    this.scratch = false;
+    this.targetBall = null;
   }
 
   get title() {
@@ -1195,7 +1201,7 @@ class BilliardsGame extends GameBase {
   }
 
   get hint() {
-    return "鼠标拖拽击球 | R 重新开始 | Esc 返回";
+    return "鼠标拖拽击球 | 先打最小号 | R 重开 | Esc 返回";
   }
 
   onEnter() {
@@ -1220,6 +1226,11 @@ class BilliardsGame extends GameBase {
     ].map((p) => ({ ...p, r: pocketR }));
 
     this.setupBalls();
+    this.firstHit = null;
+    this.turnPocketed = [];
+    this.turnActive = false;
+    this.scratch = false;
+    this.targetBall = this.lowestBallNumber();
 
     this.core.starfield.vx = 0;
     this.core.starfield.vy = 0;
@@ -1232,23 +1243,41 @@ class BilliardsGame extends GameBase {
     const r = 10;
     const gap = r * 2 + 1.5;
 
-    const rows = [1, 2, 3, 3];
+    const layout = [1, 2, 3, 2, 1];
     const positions = [];
     let idx = 0;
-    for (let rix = 0; rix < rows.length; rix++) {
-      const count = rows[rix];
-      const x = rackX + rix * gap * 0.95;
+    for (let row = 0; row < layout.length; row++) {
+      const count = layout[row];
+      const x = rackX + row * gap * 0.95;
       const startY = rackY - (count - 1) * gap * 0.5;
       for (let c = 0; c < count && idx < 9; c++, idx++) {
         positions.push({ x, y: startY + c * gap });
       }
     }
 
-    const colors = ["#ff6ece", "#78beff", "#ffe08a", "#84ffb3", "#ff8b8b", "#a8a4ff", "#ffd29a", "#7cf", "#f9f"];
+    const numberOrder = [1, 2, 3, 4, 9, 5, 6, 7, 8];
+    const colors = {
+      1: "#ffe08a",
+      2: "#78beff",
+      3: "#ff8b8b",
+      4: "#b38bff",
+      5: "#ffb36b",
+      6: "#6fd59a",
+      7: "#b36565",
+      8: "#2a2a2a",
+      9: "#ffe4a8",
+    };
+
+    this.spawnPositions = {};
 
     this.balls = [
       { x: w * 0.28, y: h * 0.5, vx: 0, vy: 0, r, color: "#ffffff", cue: true },
-      ...positions.map((p, i) => ({ x: p.x, y: p.y, vx: 0, vy: 0, r, color: colors[i % colors.length], cue: false })),
+      ...positions.map((p, i) => {
+        const number = numberOrder[i];
+        const ball = { x: p.x, y: p.y, vx: 0, vy: 0, r, color: colors[number], cue: false, number };
+        this.spawnPositions[number] = { x: p.x, y: p.y };
+        return ball;
+      }),
     ];
   }
 
@@ -1261,6 +1290,10 @@ class BilliardsGame extends GameBase {
     const cueBall = this.balls.find((b) => b.cue);
 
     if (!cueBall) return;
+
+    if (this.turnActive && this.allStopped()) {
+      this.finishTurn();
+    }
 
     // Input: drag to aim when balls stopped
     if (this.allStopped() && !this.over) {
@@ -1277,6 +1310,11 @@ class BilliardsGame extends GameBase {
         cueBall.vy += (dy / len) * impulse;
         fx.burst(cueBall.x, cueBall.y, "#78beff", 10, 140);
         audio.blip("square", 220 + rand(-30, 30), 0.08, 0.06);
+        this.turnActive = true;
+        this.firstHit = null;
+        this.turnPocketed = [];
+        this.scratch = false;
+        this.targetBall = this.lowestBallNumber();
         this.aiming = false;
       }
       this.wasDown = input.mouse.down;
@@ -1303,6 +1341,7 @@ class BilliardsGame extends GameBase {
     const { l, r, t, b } = this.table;
     const damp = Math.pow(0.985, dt * 60);
     const balls = this.balls;
+    const pocketed = [];
 
     // move
     for (const ball of balls) {
@@ -1349,7 +1388,9 @@ class BilliardsGame extends GameBase {
           c.y += ny * overlap * 0.5;
           const va = a.vx * nx + a.vy * ny;
           const vb = c.vx * nx + c.vy * ny;
-          const p = (vb - va);
+          if (!this.firstHit && a.cue && !c.cue) this.firstHit = c.number;
+          if (!this.firstHit && c.cue && !a.cue) this.firstHit = a.number;
+          const p = vb - va;
           a.vx += p * nx;
           a.vy += p * ny;
           c.vx -= p * nx;
@@ -1359,18 +1400,17 @@ class BilliardsGame extends GameBase {
     }
 
     // pockets
-    const removes = [];
     for (const ball of balls) {
       for (const pocket of this.pockets) {
         const d = Math.hypot(ball.x - pocket.x, ball.y - pocket.y);
         if (d < pocket.r) {
           if (ball.cue) {
-            // respawn cue
             ball.x = this.core.w * 0.28;
             ball.y = this.core.h * 0.5;
             ball.vx = ball.vy = 0;
+            this.scratch = true;
           } else {
-            removes.push(ball);
+            pocketed.push(ball);
             this.score += 1;
           }
           this.core.fx.burst(ball.x, ball.y, ball.cue ? "#fff" : ball.color, 20, 260);
@@ -1379,8 +1419,9 @@ class BilliardsGame extends GameBase {
         }
       }
     }
-    if (removes.length > 0) {
-      this.balls = this.balls.filter((b) => !removes.includes(b));
+    if (pocketed.length > 0) {
+      this.turnPocketed.push(...pocketed.map((b) => ({ ...b })));
+      this.balls = this.balls.filter((b) => !pocketed.includes(b));
     }
   }
 
@@ -1409,18 +1450,10 @@ class BilliardsGame extends GameBase {
       ctx.fill();
     }
 
-    // aim guide
+    // aim helper
     const cue = this.balls.find((b) => b.cue);
-    if (cue && this.allStopped() && !this.over && this.core.input.mouse.down) {
-      ctx.save();
-      ctx.strokeStyle = "rgba(255,255,255,0.5)";
-      ctx.setLineDash([6, 6]);
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(cue.x, cue.y);
-      ctx.lineTo(this.core.input.mouse.x, this.core.input.mouse.y);
-      ctx.stroke();
-      ctx.restore();
+    if (cue && this.allStopped() && !this.over) {
+      this.drawAim(ctx, cue);
     }
 
     // balls
@@ -1436,6 +1469,19 @@ class BilliardsGame extends GameBase {
       ctx.beginPath();
       ctx.arc(ball.x - ball.r * 0.4, ball.y - ball.r * 0.4, ball.r * 0.35, 0, TAU);
       ctx.fill();
+
+      if (!ball.cue && ball.number) {
+        ctx.save();
+        ctx.font = "700 10px system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(0,0,0,0.65)";
+        ctx.strokeText(ball.number, ball.x, ball.y);
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.fillText(ball.number, ball.x, ball.y);
+        ctx.restore();
+      }
     }
     ctx.restore();
 
@@ -1443,6 +1489,159 @@ class BilliardsGame extends GameBase {
     ctx.fillStyle = "rgba(255,255,255,0.8)";
     ctx.font = "700 14px system-ui";
     ctx.fillText(`Score: ${this.score}`, l, t - 16);
+    if (this.targetBall) {
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      ctx.font = "600 12px system-ui";
+      ctx.fillText(`目标球：${this.targetBall} 号`, l, t - 32);
+    }
+  }
+
+  lowestBallNumber() {
+    const remain = this.balls.filter((b) => !b.cue);
+    if (remain.length === 0) return null;
+    return Math.min(...remain.map((b) => b.number));
+  }
+
+  finishTurn() {
+    if (!this.turnActive) return;
+    this.turnActive = false;
+
+    const lowest = this.lowestBallNumber();
+    const foul = (lowest !== null && this.firstHit !== lowest) || this.scratch;
+
+    if (foul) {
+      this.score = Math.max(0, this.score - this.turnPocketed.length);
+      this.respotPocketed();
+      const cue = this.balls.find((b) => b.cue);
+      if (cue) {
+        cue.x = this.core.w * 0.28;
+        cue.y = this.core.h * 0.5;
+        cue.vx = cue.vy = 0;
+      }
+      const msg = lowest ? `犯规：必须先击中 ${lowest} 号球` : "犯规";
+      this.core.toast(msg);
+    } else {
+      const p9 = this.turnPocketed.find((b) => b.number === 9);
+      if (p9) {
+        this.winNineBall();
+      }
+    }
+
+    this.turnPocketed = [];
+    this.firstHit = null;
+    this.scratch = false;
+    this.targetBall = this.lowestBallNumber();
+  }
+
+  respotPocketed() {
+    for (const ball of this.turnPocketed) {
+      if (!ball.number) continue;
+      const spawn = this.spawnPositions[ball.number] ?? { x: this.core.w * 0.65, y: this.core.h * 0.5 };
+      let x = spawn.x;
+      let y = spawn.y;
+      let attempts = 0;
+      while (this.balls.some((b) => Math.hypot(b.x - x, b.y - y) < b.r + ball.r + 0.5) && attempts < 20) {
+        y -= ball.r * 0.6;
+        attempts++;
+      }
+      this.balls.push({ ...ball, x, y, vx: 0, vy: 0, cue: false });
+    }
+  }
+
+  winNineBall() {
+    if (this.over) return;
+    this.over = true;
+    this.core.fx.burst(this.core.w * 0.5, this.core.h * 0.5, "#84ffb3", 90, 560);
+    this.core.fx.addShake(14);
+    this.core.audio.blip("triangle", 360, 0.2, 0.08);
+    this.core.toast("9 号入袋，清台！按 R 重来");
+  }
+
+  drawAim(ctx, cue) {
+    const { input } = this.core;
+    if (!input.mouse.down && !this.aiming) return;
+
+    const dx = cue.x - input.mouse.x;
+    const dy = cue.y - input.mouse.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 4) return;
+
+    const dirX = dx / len;
+    const dirY = dy / len;
+
+    const guide = this.predictGuide(cue, dirX, dirY, 900);
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(120,190,255,0.7)";
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cue.x, cue.y);
+    ctx.lineTo(guide.x, guide.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (guide.type === "ball") {
+      ctx.fillStyle = "rgba(255,255,255,0.6)";
+      ctx.beginPath();
+      ctx.arc(guide.x, guide.y, 5, 0, TAU);
+      ctx.fill();
+    }
+
+    const stickLen = clamp(len * 1.4, 70, 220);
+    const stickStartX = cue.x - dirX * (cue.r + 4);
+    const stickStartY = cue.y - dirY * (cue.r + 4);
+    const stickEndX = stickStartX - dirX * stickLen;
+    const stickEndY = stickStartY - dirY * stickLen;
+
+    ctx.strokeStyle = "rgba(255,214,150,0.9)";
+    ctx.lineWidth = 6;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(stickStartX, stickStartY);
+    ctx.lineTo(stickEndX, stickEndY);
+    ctx.stroke();
+
+    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(stickStartX, stickStartY);
+    ctx.lineTo(stickStartX - dirX * 14, stickStartY - dirY * 14);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  predictGuide(cue, dx, dy, maxLen = 800) {
+    let best = maxLen;
+    let type = "wall";
+    const rSum = cue.r;
+
+    for (const ball of this.balls) {
+      if (ball.cue) continue;
+      const toX = ball.x - cue.x;
+      const toY = ball.y - cue.y;
+      const proj = toX * dx + toY * dy;
+      if (proj <= 0) continue;
+      const perp2 = toX * toX + toY * toY - proj * proj;
+      const rad = rSum + ball.r;
+      const rad2 = rad * rad;
+      if (perp2 <= rad2) {
+        const offset = Math.sqrt(rad2 - perp2);
+        const dist = proj - offset;
+        if (dist > 0 && dist < best) {
+          best = dist;
+          type = "ball";
+        }
+      }
+    }
+
+    const tx = dx > 0 ? (this.table.r - cue.r - cue.x) / dx : dx < 0 ? (this.table.l + cue.r - cue.x) / dx : Infinity;
+    const ty = dy > 0 ? (this.table.b - cue.r - cue.y) / dy : dy < 0 ? (this.table.t + cue.r - cue.y) / dy : Infinity;
+
+    const wallDist = Math.min(tx > 0 ? tx : Infinity, ty > 0 ? ty : Infinity, maxLen);
+    const finalDist = Math.min(best, wallDist);
+
+    return { x: cue.x + dx * finalDist, y: cue.y + dy * finalDist, type };
   }
 }
 
