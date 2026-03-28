@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>小游戏合集：坦克大战 / 俄罗斯方块 / 打飞机 / 台球 / 下100楼</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="c" width="960" height="540" aria-label="game canvas"></canvas>
+
+      <div id="hud" class="hud" aria-live="polite">
+        <div class="hud-left">
+          <div id="hudTitle" class="hud-title">小游戏合集</div>
+          <div id="hudHint" class="hud-hint">单击画面获取键盘焦点</div>
+        </div>
+        <div class="hud-right">
+          <button id="btnRestart" class="btn btn-ghost" type="button" hidden>重新开始</button>
+          <button id="btnBack" class="btn btn-ghost" type="button" hidden>返回菜单 (Esc)</button>
+        </div>
+      </div>
+
+      <div id="overlay" class="overlay">
+        <div class="card">
+          <div class="brand">
+            <div class="brand-title">选择一个模式</div>
+            <div class="brand-sub">坦克大战 / 俄罗斯方块 / 打飞机 / 台球 / 下100楼 / 赛车</div>
+          </div>
+
+          <div class="menu">
+            <button id="btnTank" class="btn" type="button">1. 坦克大战</button>
+            <button id="btnTetris" class="btn" type="button">2. 俄罗斯方块</button>
+            <button id="btnShooter" class="btn" type="button">3. 打飞机</button>
+            <button id="btnBilliards" class="btn" type="button">4. 台球（九球简化）</button>
+            <button id="btnFall" class="btn" type="button">5. 下100楼</button>
+            <button id="btnRacing" class="btn" type="button">6. 赛车</button>
+          </div>
+
+          <div class="footer">
+            <div class="kbd">快捷键：1 / 2 / 3 / 4 / 5 / 6 开始；Esc 返回</div>
+            <div class="muted">建议用 Chrome / Edge 打开；也可用 python 本地起服务</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="toast" class="toast" hidden></div>
+    </div>
+
+    <script src="./game.js" type="module"></script>
+  </body>
+</html>
