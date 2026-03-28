@@ -16,7 +16,7 @@
 如果你遇到浏览器限制（例如某些环境下键盘焦点/音频策略），建议用 Python 起一个本地静态服务：
 
 ```bash
-cd b:\vscode\test9
+cd b:\github\China
 python -m http.server 8000
 ```
 
