@@ -35,7 +35,7 @@ class Input {
 
     this.targetEl.addEventListener("mousemove", (e) => updateMouse(e));
     this.targetEl.addEventListener("mousedown", (e) => {
-      this.targetEl.focus?.();
+      if (this.targetEl.focus) this.targetEl.focus();
       this.mouse.down = true;
       updateMouse(e);
     });
@@ -356,8 +356,8 @@ class TankGame extends GameBase {
       const d = Math.hypot(this.player.x - e.x, this.player.y - e.y);
       const dir = d > 210 ? 1 : d < 140 ? -1 : 0;
 
-      e.vx = (e.vx ?? 0) + Math.cos(e.a) * accel * dir * dt;
-      e.vy = (e.vy ?? 0) + Math.sin(e.a) * accel * dir * dt;
+      e.vx = (e.vx != null ? e.vx : 0) + Math.cos(e.a) * accel * dir * dt;
+      e.vy = (e.vy != null ? e.vy : 0) + Math.sin(e.a) * accel * dir * dt;
 
       if (this.enemyCooldown <= 0 && !this.over) {
         const aim = Math.abs(da);
@@ -408,7 +408,7 @@ class TankGame extends GameBase {
         const push = minD - d;
         t.x += nx * push;
         t.y += ny * push;
-        const vn = (t.vx ?? 0) * nx + (t.vy ?? 0) * ny;
+        const vn = (t.vx != null ? t.vx : 0) * nx + (t.vy != null ? t.vy : 0) * ny;
         t.vx -= vn * nx * 1.2;
         t.vy -= vn * ny * 1.2;
       }
@@ -573,21 +573,33 @@ class TankGame extends GameBase {
 }
 
 class TetrisGame extends GameBase {
+  // 常量
+  static GRID_W = 10;
+  static GRID_H = 20;
+  static CELL_SIZE = 22;
+  static INITIAL_DROP_INTERVAL = 0.7;
+  static MIN_DROP_INTERVAL = 0.12;
+  static SPEED_INCREASE_PER_LEVEL = 0.06;
+  static LINES_PER_LEVEL = 10;
+  static SCORE_TABLE = [0, 100, 300, 500, 800];
+  static WALL_KICK_OFFSETS = [0, -1, 1, -2, 2];
+
   constructor(core) {
     super(core);
-    this.gridW = 10;
-    this.gridH = 20;
-    this.cell = 22;
+    this.gridW = TetrisGame.GRID_W;
+    this.gridH = TetrisGame.GRID_H;
+    this.cell = TetrisGame.CELL_SIZE;
     this.board = [];
     this.bag = [];
-    this.cur = null;
-    this.next = null;
-    this.dropT = 0;
-    this.dropEvery = 0.7;
+    this.currentPiece = null;
+    this.nextPiece = null;
+    this.dropTimer = 0;
+    this.dropInterval = TetrisGame.INITIAL_DROP_INTERVAL;
     this.score = 0;
     this.lines = 0;
     this.level = 1;
     this.over = false;
+    this.piecesCache = null;
   }
 
   get title() {
@@ -603,21 +615,24 @@ class TetrisGame extends GameBase {
     this.score = 0;
     this.lines = 0;
     this.level = 1;
-    this.dropEvery = 0.7;
-    this.dropT = 0;
+    this.dropInterval = TetrisGame.INITIAL_DROP_INTERVAL;
+    this.dropTimer = 0;
 
     this.board = Array.from({ length: this.gridH }, () => Array(this.gridW).fill(0));
     this.bag = [];
-    this.cur = this.spawn();
-    this.next = this.spawn();
+    this.currentPiece = this.spawn();
+    this.nextPiece = this.spawn();
 
     this.core.starfield.vx = 0;
     this.core.starfield.vy = 0;
   }
 
   pieces() {
+    // 缓存方块定义，避免重复创建
+    if (this.piecesCache) return this.piecesCache;
+
     // 4x4 matrices (row-major)
-    return {
+    this.piecesCache = {
       I: {
         color: "#78beff",
         m: [
@@ -682,6 +697,8 @@ class TetrisGame extends GameBase {
         ],
       },
     };
+
+    return this.piecesCache;
   }
 
   refillBag() {
@@ -697,30 +714,34 @@ class TetrisGame extends GameBase {
   spawn() {
     if (this.bag.length === 0) this.refillBag();
     const type = this.bag.shift();
-    const p = this.pieces()[type];
+    const pieceDef = this.pieces()[type];
     return {
       type,
-      color: p.color,
-      m: p.m.map((r) => r.slice()),
+      color: pieceDef.color,
+      matrix: pieceDef.m.map((row) => row.slice()),
       x: 3,
       y: -1,
     };
   }
 
-  rotate(m) {
+  rotate(matrix) {
     const n = 4;
-    const r = Array.from({ length: n }, () => Array(n).fill(0));
-    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) r[x][n - 1 - y] = m[y][x];
-    return r;
+    const rotated = Array.from({ length: n }, () => Array(n).fill(0));
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        rotated[x][n - 1 - y] = matrix[y][x];
+      }
+    }
+    return rotated;
   }
 
-  collide(piece, ox = 0, oy = 0, mat = null) {
-    const m = mat ?? piece.m;
+  collide(piece, offsetX = 0, offsetY = 0, matrix = null) {
+    const m = matrix != null ? matrix : piece.matrix;
     for (let y = 0; y < 4; y++) {
       for (let x = 0; x < 4; x++) {
         if (!m[y][x]) continue;
-        const gx = piece.x + x + ox;
-        const gy = piece.y + y + oy;
+        const gx = piece.x + x + offsetX;
+        const gy = piece.y + y + offsetY;
         if (gx < 0 || gx >= this.gridW || gy >= this.gridH) return true;
         if (gy >= 0 && this.board[gy][gx]) return true;
       }
@@ -730,49 +751,61 @@ class TetrisGame extends GameBase {
 
   lock() {
     const { fx, audio } = this.core;
+    const piece = this.currentPiece;
 
+    // 将当前方块锁定到棋盘
     for (let y = 0; y < 4; y++) {
       for (let x = 0; x < 4; x++) {
-        if (!this.cur.m[y][x]) continue;
-        const gx = this.cur.x + x;
-        const gy = this.cur.y + y;
+        if (!piece.matrix[y][x]) continue;
+        const gx = piece.x + x;
+        const gy = piece.y + y;
         if (gy < 0) {
           this.gameOver();
           return;
         }
-        this.board[gy][gx] = this.cur.color;
+        this.board[gy][gx] = piece.color;
       }
     }
 
     audio.blip("square", 320, 0.05, 0.04);
 
-    let cleared = 0;
-    for (let y = this.gridH - 1; y >= 0; y--) {
-      if (this.board[y].every((c) => c)) {
-        this.board.splice(y, 1);
-        this.board.unshift(Array(this.gridW).fill(0));
-        cleared++;
-        y++;
-      }
-    }
+    // 消行检测
+    const cleared = this.clearLines();
 
     if (cleared > 0) {
-      const add = [0, 100, 300, 500, 800][cleared] ?? 0;
-      this.score += add * this.level;
+      const scoreGain = (TetrisGame.SCORE_TABLE[cleared] || 0) * this.level;
+      this.score += scoreGain;
       this.lines += cleared;
-      this.level = 1 + Math.floor(this.lines / 10);
-      this.dropEvery = Math.max(0.12, 0.7 - (this.level - 1) * 0.06);
+      this.level = 1 + Math.floor(this.lines / TetrisGame.LINES_PER_LEVEL);
+      this.dropInterval = Math.max(
+        TetrisGame.MIN_DROP_INTERVAL,
+        TetrisGame.INITIAL_DROP_INTERVAL - (this.level - 1) * TetrisGame.SPEED_INCREASE_PER_LEVEL
+      );
 
       fx.burst(this.core.w * 0.52, this.core.h * 0.52, "#78beff", 40 + cleared * 10, 340);
       fx.addShake(10);
       audio.blip("triangle", 520, 0.08, 0.05);
     }
 
-    this.cur = this.next;
-    this.next = this.spawn();
-    if (this.collide(this.cur, 0, 0)) {
+    // 生成下一个方块
+    this.currentPiece = this.nextPiece;
+    this.nextPiece = this.spawn();
+    if (this.collide(this.currentPiece, 0, 0)) {
       this.gameOver();
     }
+  }
+
+  clearLines() {
+    let cleared = 0;
+    for (let y = this.gridH - 1; y >= 0; y--) {
+      if (this.board[y].every((cell) => cell)) {
+        this.board.splice(y, 1);
+        this.board.unshift(Array(this.gridW).fill(0));
+        cleared++;
+        y++; // 重新检查当前行
+      }
+    }
+    return cleared;
   }
 
   gameOver() {
@@ -787,46 +820,53 @@ class TetrisGame extends GameBase {
 
   update(dt) {
     const input = this.core.input;
+    const piece = this.currentPiece;
 
-    if (!this.over) {
-      if (input.consumeOnce("ArrowLeft") && !this.collide(this.cur, -1, 0)) this.cur.x -= 1;
-      if (input.consumeOnce("ArrowRight") && !this.collide(this.cur, 1, 0)) this.cur.x += 1;
+    if (this.over || !piece) return;
 
-      if (input.consumeOnce("ArrowUp")) {
-        const rm = this.rotate(this.cur.m);
-        // simple wall-kick
-        const kicks = [0, -1, 1, -2, 2];
-        for (const k of kicks) {
-          if (!this.collide(this.cur, k, 0, rm)) {
-            this.cur.m = rm;
-            this.cur.x += k;
-            this.core.audio.blip("sine", 520, 0.04, 0.03);
-            break;
-          }
+    // 左右移动
+    if (input.consumeOnce("ArrowLeft") && !this.collide(piece, -1, 0)) {
+      piece.x -= 1;
+    }
+    if (input.consumeOnce("ArrowRight") && !this.collide(piece, 1, 0)) {
+      piece.x += 1;
+    }
+
+    // 旋转（带 wall-kick）
+    if (input.consumeOnce("ArrowUp")) {
+      const rotatedMatrix = this.rotate(piece.matrix);
+      for (const kick of TetrisGame.WALL_KICK_OFFSETS) {
+        if (!this.collide(piece, kick, 0, rotatedMatrix)) {
+          piece.matrix = rotatedMatrix;
+          piece.x += kick;
+          this.core.audio.blip("sine", 520, 0.04, 0.03);
+          break;
         }
       }
+    }
 
-      if (input.consumeOnce("Space")) {
-        // hard drop
-        let steps = 0;
-        while (!this.collide(this.cur, 0, 1)) {
-          this.cur.y += 1;
-          steps++;
-        }
-        this.score += steps * 2;
+    // 硬降
+    if (input.consumeOnce("Space")) {
+      let steps = 0;
+      while (!this.collide(piece, 0, 1)) {
+        piece.y += 1;
+        steps++;
+      }
+      this.score += steps * 2;
+      this.lock();
+      this.dropTimer = 0;
+      return;
+    }
+
+    // 自动下落
+    const fastDrop = input.isDown("ArrowDown") ? 0.06 : this.dropInterval;
+    this.dropTimer += dt;
+    if (this.dropTimer >= fastDrop) {
+      this.dropTimer = 0;
+      if (!this.collide(piece, 0, 1)) {
+        piece.y += 1;
+      } else {
         this.lock();
-        this.dropT = 0;
-      }
-
-      const fast = input.isDown("ArrowDown") ? 0.06 : this.dropEvery;
-      this.dropT += dt;
-      if (this.dropT >= fast) {
-        this.dropT = 0;
-        if (!this.collide(this.cur, 0, 1)) {
-          this.cur.y += 1;
-        } else {
-          this.lock();
-        }
       }
     }
   }
@@ -870,17 +910,20 @@ class TetrisGame extends GameBase {
     // current piece + ghost
     if (!this.over) {
       // ghost
-      let gy = this.cur.y;
+      const current = this.currentPiece;
+      if (!current) return;
+
+      let gy = current.y;
       while (true) {
-        const probe = { ...this.cur, y: gy };
+        const probe = { ...current, y: gy };
         if (this.collide(probe, 0, 1)) break;
         gy += 1;
         if (gy > this.gridH + 4) break;
       }
-      const ghost = { ...this.cur, y: gy, color: this.cur.color + "55" };
+      const ghost = { ...current, y: gy, color: current.color + "55" };
       drawPiece(ctx, ghost, ox, oy, cell, true);
 
-      drawPiece(ctx, this.cur, ox, oy, cell);
+      drawPiece(ctx, current, ox, oy, cell);
     }
 
     // sidebar
@@ -897,7 +940,7 @@ class TetrisGame extends GameBase {
     ctx.fillStyle = "rgba(235,245,255,0.9)";
     ctx.font = "700 14px system-ui";
     ctx.fillText("NEXT", sx + 12, sy + 26);
-    drawPiece(ctx, { ...this.next, x: 1, y: 1 }, sx + 22, sy + 40, cell);
+    drawPiece(ctx, { ...this.nextPiece, x: 1, y: 1 }, sx + 22, sy + 40, cell);
 
     ctx.fillStyle = "rgba(235,245,255,0.7)";
     ctx.font = "600 13px system-ui";
@@ -1194,6 +1237,14 @@ class BilliardsGame extends GameBase {
     this.turnActive = false;
     this.scratch = false;
     this.targetBall = null;
+    this.players = [
+      { name: "玩家A", inHand: false },
+      { name: "玩家B", inHand: false },
+    ];
+    this.currentTurn = 0;
+    this.charging = false;
+    this.charge = 0;
+    this.chargeMax = 1.2;
   }
 
   get title() {
@@ -1201,7 +1252,7 @@ class BilliardsGame extends GameBase {
   }
 
   get hint() {
-    return "鼠标拖拽击球 | 先打最小号 | R 重开 | Esc 返回";
+    return "按住蓄力松开出杆 | 先打最小号 | 轮流对打 | R 重开 | Esc 返回";
   }
 
   onEnter() {
@@ -1231,6 +1282,12 @@ class BilliardsGame extends GameBase {
     this.turnActive = false;
     this.scratch = false;
     this.targetBall = this.lowestBallNumber();
+    this.players[0].inHand = false;
+    this.players[1].inHand = false;
+    this.currentTurn = 0;
+    this.charging = false;
+    this.charge = 0;
+    this.placeCueBall(this.defaultCueSpot().x, this.defaultCueSpot().y);
 
     this.core.starfield.vx = 0;
     this.core.starfield.vy = 0;
@@ -1291,34 +1348,38 @@ class BilliardsGame extends GameBase {
 
     if (!cueBall) return;
 
+    const current = this.players[this.currentTurn];
+
     if (this.turnActive && this.allStopped()) {
       this.finishTurn();
+      return;
+    }
+
+    // 手中球放置
+    if (!this.over && current.inHand && this.allStopped()) {
+      if (input.mouse.down) {
+        const p = this.clampToTable(input.mouse.x, input.mouse.y, cueBall.r);
+        if (this.canPlaceCueBall(p.x, p.y, cueBall.r)) {
+          this.placeCueBall(p.x, p.y);
+          current.inHand = false;
+        }
+      }
     }
 
     // Input: drag to aim when balls stopped
-    if (this.allStopped() && !this.over) {
+    if (this.allStopped() && !this.over && !current.inHand) {
       if (input.mouse.down) {
-        this.aiming = true;
+        if (!this.charging) {
+          this.charging = true;
+          this.charge = 0;
+        }
+        this.charge = Math.min(this.chargeMax, this.charge + dt);
       }
-      if (this.aiming && !input.mouse.down && this.wasDown) {
-        const dx = cueBall.x - input.mouse.x;
-        const dy = cueBall.y - input.mouse.y;
-        const len = Math.hypot(dx, dy) || 1;
-        const power = clamp(len, 12, 160);
-        const impulse = power * 22;
-        cueBall.vx += (dx / len) * impulse;
-        cueBall.vy += (dy / len) * impulse;
-        fx.burst(cueBall.x, cueBall.y, "#78beff", 10, 140);
-        audio.blip("square", 220 + rand(-30, 30), 0.08, 0.06);
-        this.turnActive = true;
-        this.firstHit = null;
-        this.turnPocketed = [];
-        this.scratch = false;
-        this.targetBall = this.lowestBallNumber();
-        this.aiming = false;
+      if (!input.mouse.down && this.charging) {
+        this.fireHumanShot(cueBall, input, fx, audio);
       }
-      this.wasDown = input.mouse.down;
     } else {
+      this.charging = false;
       this.aiming = false;
       this.wasDown = input.mouse.down;
     }
@@ -1326,15 +1387,7 @@ class BilliardsGame extends GameBase {
     // Physics
     this.simulate(dt);
 
-    // Win condition
-    const remaining = this.balls.filter((b) => !b.cue);
-    if (!this.over && remaining.length === 0) {
-      this.over = true;
-      fx.burst(this.core.w * 0.5, this.core.h * 0.5, "#84ffb3", 80, 520);
-      fx.addShake(14);
-      audio.blip("triangle", 360, 0.18, 0.08);
-      this.core.toast("清台！按 R 或 按钮重新开始");
-    }
+    // win handled in finishTurn for 9-ball
   }
 
   simulate(dt) {
@@ -1429,6 +1482,7 @@ class BilliardsGame extends GameBase {
     const { l, r, t, b } = this.table;
     const w = r - l;
     const h = b - t;
+    const current = this.players[this.currentTurn];
 
     // table
     const g = ctx.createLinearGradient(l, t, r, b);
@@ -1454,6 +1508,8 @@ class BilliardsGame extends GameBase {
     const cue = this.balls.find((b) => b.cue);
     if (cue && this.allStopped() && !this.over) {
       this.drawAim(ctx, cue);
+      if (this.charging) this.drawPowerArc(ctx, cue);
+      if (current.inHand) this.drawPlaceHint(ctx, cue);
     }
 
     // balls
@@ -1489,11 +1545,11 @@ class BilliardsGame extends GameBase {
     ctx.fillStyle = "rgba(255,255,255,0.8)";
     ctx.font = "700 14px system-ui";
     ctx.fillText(`Score: ${this.score}`, l, t - 16);
-    if (this.targetBall) {
-      ctx.fillStyle = "rgba(255,255,255,0.7)";
-      ctx.font = "600 12px system-ui";
-      ctx.fillText(`目标球：${this.targetBall} 号`, l, t - 32);
-    }
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.font = "600 12px system-ui";
+    if (this.targetBall) ctx.fillText(`目标球：${this.targetBall} 号`, l, t - 32);
+    ctx.fillText(`回合：${current.name}`, l, t - 48);
+    if (current.inHand && !this.over) ctx.fillText(`手中球：点击放置`, l, t - 64);
   }
 
   lowestBallNumber() {
@@ -1508,6 +1564,8 @@ class BilliardsGame extends GameBase {
 
     const lowest = this.lowestBallNumber();
     const foul = (lowest !== null && this.firstHit !== lowest) || this.scratch;
+    const current = this.players[this.currentTurn];
+    const opponent = this.players[1 - this.currentTurn];
 
     if (foul) {
       this.score = Math.max(0, this.score - this.turnPocketed.length);
@@ -1518,12 +1576,16 @@ class BilliardsGame extends GameBase {
         cue.y = this.core.h * 0.5;
         cue.vx = cue.vy = 0;
       }
+      opponent.inHand = true;
       const msg = lowest ? `犯规：必须先击中 ${lowest} 号球` : "犯规";
       this.core.toast(msg);
+      this.switchTurn();
     } else {
       const p9 = this.turnPocketed.find((b) => b.number === 9);
       if (p9) {
         this.winNineBall();
+      } else if (this.turnPocketed.length === 0) {
+        this.switchTurn();
       }
     }
 
@@ -1531,12 +1593,14 @@ class BilliardsGame extends GameBase {
     this.firstHit = null;
     this.scratch = false;
     this.targetBall = this.lowestBallNumber();
+    this.charging = false;
+    this.charge = 0;
   }
 
   respotPocketed() {
     for (const ball of this.turnPocketed) {
       if (!ball.number) continue;
-      const spawn = this.spawnPositions[ball.number] ?? { x: this.core.w * 0.65, y: this.core.h * 0.5 };
+      const spawn = this.spawnPositions[ball.number] != null ? this.spawnPositions[ball.number] : { x: this.core.w * 0.65, y: this.core.h * 0.5 };
       let x = spawn.x;
       let y = spawn.y;
       let attempts = 0;
@@ -1554,7 +1618,85 @@ class BilliardsGame extends GameBase {
     this.core.fx.burst(this.core.w * 0.5, this.core.h * 0.5, "#84ffb3", 90, 560);
     this.core.fx.addShake(14);
     this.core.audio.blip("triangle", 360, 0.2, 0.08);
-    this.core.toast("9 号入袋，清台！按 R 重来");
+    this.core.toast("9 号入袋，胜利！按 R 重来");
+  }
+
+  defaultCueSpot() {
+    return { x: this.core.w * 0.28, y: this.core.h * 0.5 };
+  }
+
+  placeCueBall(x, y) {
+    const cue = this.balls.find((b) => b.cue);
+    if (!cue) return;
+    cue.x = x;
+    cue.y = y;
+    cue.vx = 0;
+    cue.vy = 0;
+  }
+
+  clampToTable(x, y, r) {
+    return {
+      x: clamp(x, this.table.l + r, this.table.r - r),
+      y: clamp(y, this.table.t + r, this.table.b - r),
+    };
+  }
+
+  canPlaceCueBall(x, y, r) {
+    for (const b of this.balls) {
+      if (b.cue) continue;
+      if (Math.hypot(b.x - x, b.y - y) < b.r + r + 0.5) return false;
+    }
+    return true;
+  }
+
+  fireHumanShot(cueBall, input, fx, audio) {
+    const dx = cueBall.x - input.mouse.x;
+    const dy = cueBall.y - input.mouse.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const power = clamp((this.charge / this.chargeMax) * 160, 12, 160);
+    const impulse = power * 22;
+    cueBall.vx += (dx / len) * impulse;
+    cueBall.vy += (dy / len) * impulse;
+    fx.burst(cueBall.x, cueBall.y, "#78beff", 10, 140);
+    audio.blip("square", 220 + rand(-30, 30), 0.08, 0.06);
+    this.turnActive = true;
+    this.firstHit = null;
+    this.turnPocketed = [];
+    this.scratch = false;
+    this.targetBall = this.lowestBallNumber();
+    this.charging = false;
+    this.aiming = false;
+  }
+
+  drawPowerArc(ctx, cue) {
+    const frac = clamp(this.charge / this.chargeMax, 0, 1);
+    const r = cue.r * 2.4;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,214,150," + (0.6 + 0.4 * frac) + ")";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(cue.x, cue.y, r, -Math.PI / 2, -Math.PI / 2 + frac * TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawPlaceHint(ctx, cue) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(120,190,255,0.7)";
+    ctx.setLineDash([6, 6]);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cue.x, cue.y, cue.r * 1.8, 0, TAU);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  switchTurn() {
+    this.currentTurn = 1 - this.currentTurn;
+    this.charging = false;
+    this.charge = 0;
+    this.turnActive = false;
   }
 
   drawAim(ctx, cue) {
@@ -1940,6 +2082,245 @@ class RacingGame extends GameBase {
   }
 }
 
+class SnakeGame extends GameBase {
+  constructor(core) {
+    super(core);
+    this.snake = [];
+    this.food = null;
+    this.dir = { x: 1, y: 0 };
+    this.nextDir = { x: 1, y: 0 };
+    this.score = 0;
+    this.level = 1;
+    this.over = false;
+    this.moveT = 0;
+    this.moveEvery = 0.15;
+    this.targetLen = 5;
+    this.gridW = 30;
+    this.gridH = 20;
+    this.cell = 0;
+    this.ox = 0;
+    this.oy = 0;
+  }
+
+  get title() {
+    return "贪吃蛇";
+  }
+
+  get hint() {
+    return "方向键控制 | 吃食物成长 | 达到长度通关 | Esc 返回";
+  }
+
+  onEnter() {
+    const { w, h } = this.core;
+    this.over = false;
+    this.score = 0;
+    this.level = 1;
+    this.moveEvery = 0.15;
+    this.moveT = 0;
+    this.targetLen = 10;
+
+    this.cell = Math.floor(Math.min(w / (this.gridW + 2), h / (this.gridH + 2)));
+    this.ox = Math.floor((w - this.gridW * this.cell) / 2);
+    this.oy = Math.floor((h - this.gridH * this.cell) / 2);
+
+    const startX = Math.floor(this.gridW / 2);
+    const startY = Math.floor(this.gridH / 2);
+    this.snake = [
+      { x: startX, y: startY },
+      { x: startX - 1, y: startY },
+      { x: startX - 2, y: startY },
+    ];
+    this.dir = { x: 1, y: 0 };
+    this.nextDir = { x: 1, y: 0 };
+
+    this.spawnFood();
+
+    this.core.starfield.vx = 0;
+    this.core.starfield.vy = 0;
+  }
+
+  spawnFood() {
+    const occupied = new Set(this.snake.map((s) => `${s.x},${s.y}`));
+    let attempts = 0;
+    while (attempts < 1000) {
+      const x = randi(0, this.gridW - 1);
+      const y = randi(0, this.gridH - 1);
+      if (!occupied.has(`${x},${y}`)) {
+        this.food = { x, y };
+        return;
+      }
+      attempts++;
+    }
+  }
+
+  update(dt) {
+    const { input, fx, audio } = this.core;
+    if (this.over) return;
+
+    if (input.consumeOnce("ArrowUp") && this.dir.y !== 1) this.nextDir = { x: 0, y: -1 };
+    if (input.consumeOnce("ArrowDown") && this.dir.y !== -1) this.nextDir = { x: 0, y: 1 };
+    if (input.consumeOnce("ArrowLeft") && this.dir.x !== 1) this.nextDir = { x: -1, y: 0 };
+    if (input.consumeOnce("ArrowRight") && this.dir.x !== -1) this.nextDir = { x: 1, y: 0 };
+
+    this.moveT += dt;
+    if (this.moveT < this.moveEvery) return;
+    this.moveT = 0;
+
+    this.dir = this.nextDir;
+    const head = this.snake[0];
+    const nx = head.x + this.dir.x;
+    const ny = head.y + this.dir.y;
+
+    if (nx < 0 || nx >= this.gridW || ny < 0 || ny >= this.gridH) {
+      this.gameOver();
+      return;
+    }
+
+    for (let i = 0; i < this.snake.length; i++) {
+      if (this.snake[i].x === nx && this.snake[i].y === ny) {
+        this.gameOver();
+        return;
+      }
+    }
+
+    this.snake.unshift({ x: nx, y: ny });
+
+    if (this.food && nx === this.food.x && ny === this.food.y) {
+      this.score += 10 * this.level;
+      fx.burst(
+        this.ox + nx * this.cell + this.cell / 2,
+        this.oy + ny * this.cell + this.cell / 2,
+        "#84ffb3",
+        15,
+        200
+      );
+      audio.blip("triangle", 440, 0.06, 0.04);
+
+      if (this.snake.length >= this.targetLen) {
+        this.level++;
+        this.targetLen += 5;
+        this.moveEvery = Math.max(0.06, this.moveEvery - 0.015);
+        fx.burst(this.core.w * 0.5, this.core.h * 0.5, "#78beff", 40, 350);
+        audio.blip("square", 660, 0.1, 0.06);
+        this.core.toast(`第 ${this.level} 关！目标长度：${this.targetLen}`);
+      }
+
+      this.spawnFood();
+    } else {
+      this.snake.pop();
+    }
+
+    audio.blip("sine", 280 + rand(-20, 20), 0.03, 0.02);
+  }
+
+  gameOver() {
+    if (this.over) return;
+    this.over = true;
+    const { fx, audio } = this.core;
+    const head = this.snake[0];
+    fx.burst(
+      this.ox + head.x * this.cell + this.cell / 2,
+      this.oy + head.y * this.cell + this.cell / 2,
+      "#ff6ece",
+      50,
+      400
+    );
+    fx.addShake(14);
+    audio.blip("sawtooth", 130, 0.18, 0.08);
+    this.core.toast(`撞墙了！Score: ${this.score} | 按 R 重开`);
+  }
+
+  draw(ctx) {
+    const { w, h } = this.core;
+    const { ox, oy, cell, gridW, gridH } = this;
+
+    ctx.save();
+
+    // grid background
+    ctx.fillStyle = "rgba(255,255,255,0.03)";
+    roundRect(ctx, ox - 6, oy - 6, gridW * cell + 12, gridH * cell + 12, 10);
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(120,190,255,0.18)";
+    ctx.lineWidth = 2;
+    roundRect(ctx, ox - 6, oy - 6, gridW * cell + 12, gridH * cell + 12, 10);
+    ctx.stroke();
+
+    // grid cells
+    for (let y = 0; y < gridH; y++) {
+      for (let x = 0; x < gridW; x++) {
+        ctx.fillStyle = "rgba(255,255,255,0.02)";
+        ctx.fillRect(ox + x * cell, oy + y * cell, cell - 1, cell - 1);
+      }
+    }
+
+    // food
+    if (this.food) {
+      const fx = ox + this.food.x * cell + cell / 2;
+      const fy = oy + this.food.y * cell + cell / 2;
+      ctx.fillStyle = "rgba(255,110,206,0.3)";
+      ctx.beginPath();
+      ctx.arc(fx, fy, cell * 0.6, 0, TAU);
+      ctx.fill();
+
+      ctx.fillStyle = "#ff6ece";
+      ctx.beginPath();
+      ctx.arc(fx, fy, cell * 0.35, 0, TAU);
+      ctx.fill();
+    }
+
+    // snake
+    for (let i = 0; i < this.snake.length; i++) {
+      const s = this.snake[i];
+      const px = ox + s.x * cell;
+      const py = oy + s.y * cell;
+      const isHead = i === 0;
+      const a = isHead ? 1 : 0.7 + 0.3 * (1 - i / this.snake.length);
+
+      ctx.fillStyle = isHead ? "rgba(120,190,255,0.95)" : `rgba(120,190,255,${a * 0.7})`;
+      roundRect(ctx, px + 2, py + 2, cell - 4, cell - 4, 5);
+      ctx.fill();
+
+      if (isHead) {
+        ctx.fillStyle = "rgba(255,255,255,0.6)";
+        const eyeOffset = cell * 0.25;
+        const eyeR = cell * 0.12;
+        if (this.dir.x === 1) {
+          ctx.beginPath();
+          ctx.arc(px + cell - eyeOffset, py + eyeOffset, eyeR, 0, TAU);
+          ctx.arc(px + cell - eyeOffset, py + cell - eyeOffset, eyeR, 0, TAU);
+          ctx.fill();
+        } else if (this.dir.x === -1) {
+          ctx.beginPath();
+          ctx.arc(px + eyeOffset, py + eyeOffset, eyeR, 0, TAU);
+          ctx.arc(px + eyeOffset, py + cell - eyeOffset, eyeR, 0, TAU);
+          ctx.fill();
+        } else if (this.dir.y === -1) {
+          ctx.beginPath();
+          ctx.arc(px + eyeOffset, py + eyeOffset, eyeR, 0, TAU);
+          ctx.arc(px + cell - eyeOffset, py + eyeOffset, eyeR, 0, TAU);
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.arc(px + eyeOffset, py + cell - eyeOffset, eyeR, 0, TAU);
+          ctx.arc(px + cell - eyeOffset, py + cell - eyeOffset, eyeR, 0, TAU);
+          ctx.fill();
+        }
+      }
+    }
+
+    // HUD
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.font = "700 14px system-ui";
+    ctx.fillText(`Score: ${this.score}`, ox, oy - 12);
+    ctx.fillStyle = "rgba(255,255,255,0.6)";
+    ctx.font = "600 12px system-ui";
+    ctx.fillText(`Level: ${this.level} | 长度: ${this.snake.length}/${this.targetLen}`, ox, oy - 30);
+
+    ctx.restore();
+  }
+}
+
 function roundRect(ctx, x, y, w, h, r) {
   const rr = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
@@ -2058,9 +2439,9 @@ class Core {
     this.overlay.style.pointerEvents = "auto";
     this.backBtn.hidden = true;
     this.restartBtn.hidden = true;
-    if (this.active) this.active.onExit?.();
+    if (this.active && this.active.onExit) this.active.onExit();
     this.active = null;
-    this.setHud("小游戏合集", "快捷键：1 / 2 / 3 / 4 / 5 / 6 开始；单击画面获取键盘焦点");
+    this.setHud("小游戏合集", "快捷键：1 / 2 / 3 / 4 / 5 / 6 / 7 开始；单击画面获取键盘焦点");
     this.starfield.vx = 0;
     this.starfield.vy = 0;
     this.toastEl.hidden = true;
@@ -2073,20 +2454,20 @@ class Core {
     this.overlay.style.pointerEvents = "none";
     this.backBtn.hidden = false;
     this.restartBtn.hidden = false;
-    if (this.active) this.active.onExit?.();
+    if (this.active && this.active.onExit) this.active.onExit();
     this.active = game;
-    this.active.onEnter?.();
+    if (this.active.onEnter) this.active.onEnter();
     this.setHud(game.title, game.hint);
     this.toast(`${game.title}：开始！`);
-    this.canvas.focus?.();
+    if (this.canvas.focus) this.canvas.focus();
   }
 
   restart() {
     if (!this.active) return;
-    this.active.onEnter?.();
+    if (this.active.onEnter) this.active.onEnter();
     this.setHud(this.active.title, this.active.hint);
     this.toast("已重新开始");
-    this.canvas.focus?.();
+    if (this.canvas.focus) this.canvas.focus();
   }
 
   handleResize() {
@@ -2094,7 +2475,7 @@ class Core {
     this.w = this.canvas.width;
     this.h = this.canvas.height;
     this.starfield.resize(this.w, this.h);
-    this.active?.onResize?.(this.w, this.h);
+    if (this.active && this.active.onResize) this.active.onResize(this.w, this.h);
   }
 
   frame(dt) {
@@ -2174,6 +2555,7 @@ const games = {
   billiards: new BilliardsGame(core),
   fall: new FallGame(core),
   racing: new RacingGame(core),
+  snake: new SnakeGame(core),
 };
 
 async function startGameSafe(game) {
@@ -2191,6 +2573,7 @@ const btnShooter = document.getElementById("btnShooter");
 const btnBilliards = document.getElementById("btnBilliards");
 const btnFall = document.getElementById("btnFall");
 const btnRacing = document.getElementById("btnRacing");
+const btnSnake = document.getElementById("btnSnake");
 
 btnTank.addEventListener("click", () => startGameSafe(games.tank));
 btnTetris.addEventListener("click", () => startGameSafe(games.tetris));
@@ -2198,6 +2581,7 @@ btnShooter.addEventListener("click", () => startGameSafe(games.shooter));
 btnBilliards.addEventListener("click", () => startGameSafe(games.billiards));
 btnFall.addEventListener("click", () => startGameSafe(games.fall));
 btnRacing.addEventListener("click", () => startGameSafe(games.racing));
+btnSnake.addEventListener("click", () => startGameSafe(games.snake));
 
 window.addEventListener("keydown", async (e) => {
   if (core.mode !== "menu") return;
@@ -2218,6 +2602,9 @@ window.addEventListener("keydown", async (e) => {
   }
   if (["Digit6", "Numpad6"].includes(e.code)) {
     startGameSafe(games.racing);
+  }
+  if (["Digit7", "Numpad7"].includes(e.code)) {
+    startGameSafe(games.snake);
   }
 });
 
