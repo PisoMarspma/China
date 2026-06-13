@@ -2448,7 +2448,7 @@ class Core {
     this.restartBtn.hidden = true;
     if (this.active && this.active.onExit) this.active.onExit();
     this.active = null;
-    this.setHud("小游戏合集", "快捷键：1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 0 开始；单击画面获取键盘焦点");
+    this.setHud("小游戏合集", "快捷键：1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 0 / - 开始；单击画面获取键盘焦点");
     this.starfield.vx = 0;
     this.starfield.vy = 0;
     this.toastEl.hidden = true;
@@ -3757,6 +3757,545 @@ class BubbleShooter extends GameBase {
   }
 }
 
+class MagicTowerGame extends GameBase {
+  // 地图元素类型
+  static TILE = {
+    EMPTY: 0,
+    WALL: 1,
+    PLAYER: 2,
+    MONSTER: 3,
+    POTION: 4,
+    ATK_UP: 5,
+    DEF_UP: 6,
+    STAIRS: 7,
+    KEY: 8,
+    DOOR: 9,
+  };
+
+  // 怪物符号
+  static MONSTER_TYPES = [
+    { symbol: "💀", name: "骷髅", baseHp: 20, baseAtk: 5, baseDef: 2 },
+    { symbol: "🦇", name: "蝙蝠", baseHp: 15, baseAtk: 8, baseDef: 1 },
+    { symbol: "👻", name: "幽灵", baseHp: 30, baseAtk: 6, baseDef: 4 },
+    { symbol: "🐉", name: "小龙", baseHp: 50, baseAtk: 12, baseDef: 6 },
+    { symbol: "👹", name: "恶魔", baseHp: 80, baseAtk: 18, baseDef: 10 },
+  ];
+
+  // 物品符号
+  static ITEMS = {
+    [3]: { symbol: "❤️", name: "生命药水", effect: "hp", value: 50 },
+    [4]: { symbol: "⚔️", name: "攻击宝石", effect: "atk", value: 3 },
+    [5]: { symbol: "🛡️", name: "防御宝石", effect: "def", value: 3 },
+    [7]: { symbol: "🪜", name: "楼梯", effect: "stairs", value: 0 },
+    [8]: { symbol: "🔑", name: "钥匙", effect: "key", value: 1 },
+    [9]: { symbol: "🚪", name: "门", effect: "door", value: 0 },
+  };
+
+  constructor(core) {
+    super(core);
+    this.gridSize = 15;
+    this.cell = 0;
+    this.ox = 0;
+    this.oy = 0;
+    this.floor = 1;
+    this.maxFloor = 10;
+    this.map = [];
+    this.player = null;
+    this.monsters = [];
+    this.message = "";
+    this.messageTimer = 0;
+    this.over = false;
+    this.won = false;
+    this.moveCount = 0;
+  }
+
+  get title() {
+    return "魔塔";
+  }
+
+  get hint() {
+    return "方向键移动 | 击败怪物 | 到达楼梯 | Esc 返回 | R 重开";
+  }
+
+  onEnter() {
+    this.over = false;
+    this.won = false;
+    this.floor = 1;
+    this.moveCount = 0;
+    this.startFloor();
+
+    this.core.starfield.vx = 0;
+    this.core.starfield.vy = 0;
+  }
+
+  startFloor() {
+    this.calculateLayout();
+
+    // 初始化玩家
+    if (!this.player) {
+      this.player = {
+        x: 7,
+        y: 13,
+        hp: 100,
+        maxHp: 100,
+        atk: 10,
+        def: 5,
+        keys: 0,
+        gold: 0,
+      };
+    } else {
+      this.player.x = 7;
+      this.player.y = 13;
+    }
+
+    this.generateMap();
+    this.message = `第 ${this.floor} 层`;
+    this.messageTimer = 2;
+  }
+
+  calculateLayout() {
+    const { w, h } = this.core;
+    const maxCellSize = 32;
+    this.cell = Math.floor(Math.min(
+      (w - 40) / this.gridSize,
+      (h - 100) / this.gridSize,
+      maxCellSize
+    ));
+    const boardW = this.gridSize * this.cell;
+    const boardH = this.gridSize * this.cell;
+    this.ox = Math.floor((w - boardW) / 2);
+    this.oy = Math.floor((h - boardH) / 2) + 15;
+  }
+
+  generateMap() {
+    const T = MagicTowerGame.TILE;
+    this.map = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(T.EMPTY));
+    this.monsters = [];
+
+    // 生成墙壁边界
+    for (let i = 0; i < this.gridSize; i++) {
+      this.map[0][i] = T.WALL;
+      this.map[this.gridSize - 1][i] = T.WALL;
+      this.map[i][0] = T.WALL;
+      this.map[i][this.gridSize - 1] = T.WALL;
+    }
+
+    // 生成随机内部墙壁
+    const wallCount = 15 + this.floor * 2;
+    for (let i = 0; i < wallCount; i++) {
+      let x, y;
+      do {
+        x = randi(1, this.gridSize - 2);
+        y = randi(1, this.gridSize - 2);
+      } while (this.map[y][x] !== T.EMPTY || (x === 7 && y >= 11));
+      this.map[y][x] = T.WALL;
+    }
+
+    // 生成怪物
+    const monsterCount = 8 + this.floor * 2;
+    for (let i = 0; i < monsterCount; i++) {
+      let x, y;
+      do {
+        x = randi(1, this.gridSize - 2);
+        y = randi(1, this.gridSize - 2);
+      } while (this.map[y][x] !== T.EMPTY || (x === 7 && y >= 11));
+
+      const typeIdx = Math.min(randi(0, Math.min(this.floor, MagicTowerGame.MONSTER_TYPES.length - 1)), MagicTowerGame.MONSTER_TYPES.length - 1);
+      const monsterType = MagicTowerGame.MONSTER_TYPES[typeIdx];
+      const floorMultiplier = 1 + (this.floor - 1) * 0.3;
+
+      const monster = {
+        x,
+        y,
+        type: typeIdx,
+        symbol: monsterType.symbol,
+        name: monsterType.name,
+        hp: Math.floor(monsterType.baseHp * floorMultiplier),
+        maxHp: Math.floor(monsterType.baseHp * floorMultiplier),
+        atk: Math.floor(monsterType.baseAtk * floorMultiplier),
+        def: Math.floor(monsterType.baseDef * floorMultiplier),
+      };
+
+      this.monsters.push(monster);
+      this.map[y][x] = T.MONSTER;
+    }
+
+    // 生成物品
+    const potionCount = 5 + this.floor;
+    const atkCount = 2 + Math.floor(this.floor / 2);
+    const defCount = 2 + Math.floor(this.floor / 2);
+    const keyCount = 2 + Math.floor(this.floor / 3);
+
+    const placeItem = (type) => {
+      let x, y;
+      let attempts = 0;
+      do {
+        x = randi(1, this.gridSize - 2);
+        y = randi(1, this.gridSize - 2);
+        attempts++;
+      } while (this.map[y][x] !== T.EMPTY && attempts < 100);
+      if (attempts < 100) this.map[y][x] = type;
+    };
+
+    for (let i = 0; i < potionCount; i++) placeItem(T.POTION);
+    for (let i = 0; i < atkCount; i++) placeItem(T.ATK_UP);
+    for (let i = 0; i < defCount; i++) placeItem(T.DEF_UP);
+    for (let i = 0; i < keyCount; i++) placeItem(T.KEY);
+
+    // 生成门
+    const doorCount = 2 + Math.floor(this.floor / 2);
+    for (let i = 0; i < doorCount; i++) placeItem(T.DOOR);
+
+    // 生成楼梯（如果不是最后一层）
+    if (this.floor < this.maxFloor) {
+      let sx, sy;
+      do {
+        sx = randi(3, this.gridSize - 4);
+        sy = randi(1, 5);
+      } while (this.map[sy][sx] !== T.EMPTY);
+      this.map[sy][sx] = T.STAIRS;
+    } else {
+      // 最后一层，生成通关标记
+      let ex, ey;
+      do {
+        ex = randi(3, this.gridSize - 4);
+        ey = randi(1, 5);
+      } while (this.map[ey][ex] !== T.EMPTY);
+      this.map[ey][ex] = T.STAIRS;
+    }
+
+    // 确保玩家出生点周围畅通
+    this.map[13][7] = T.EMPTY;
+    this.map[12][7] = T.EMPTY;
+    this.map[13][6] = T.EMPTY;
+    this.map[13][8] = T.EMPTY;
+  }
+
+  update(dt) {
+    const { input, fx, audio } = this.core;
+
+    if (this.over) {
+      if (input.consumeOnce("KeyR")) {
+        this.player = null;
+        this.floor = 1;
+        this.startFloor();
+        this.over = false;
+      }
+      return;
+    }
+
+    // 消息计时
+    if (this.messageTimer > 0) {
+      this.messageTimer -= dt;
+    }
+
+    // 移动控制
+    let dx = 0, dy = 0;
+    if (input.consumeOnce("ArrowLeft")) dx = -1;
+    else if (input.consumeOnce("ArrowRight")) dx = 1;
+    else if (input.consumeOnce("ArrowUp")) dy = -1;
+    else if (input.consumeOnce("ArrowDown")) dy = 1;
+
+    if (dx !== 0 || dy !== 0) {
+      this.tryMove(dx, dy, fx, audio);
+    }
+  }
+
+  tryMove(dx, dy, fx, audio) {
+    const T = MagicTowerGame.TILE;
+    const nx = this.player.x + dx;
+    const ny = this.player.y + dy;
+
+    // 边界检查
+    if (nx < 0 || nx >= this.gridSize || ny < 0 || ny >= this.gridSize) return;
+
+    const tile = this.map[ny][nx];
+
+    // 墙壁
+    if (tile === T.WALL) {
+      audio.blip("sine", 100, 0.03, 0.02);
+      return;
+    }
+
+    // 怪物 - 战斗
+    if (tile === T.MONSTER) {
+      const monster = this.monsters.find(m => m.x === nx && m.y === ny);
+      if (monster) {
+        this.combat(monster, fx, audio);
+        return;
+      }
+    }
+
+    // 门 - 需要钥匙
+    if (tile === T.DOOR) {
+      if (this.player.keys > 0) {
+        this.player.keys--;
+        this.map[ny][nx] = T.EMPTY;
+        this.message = "使用钥匙开门";
+        this.messageTimer = 1.5;
+        audio.blip("triangle", 400, 0.08, 0.05);
+      } else {
+        this.message = "需要钥匙才能开门";
+        this.messageTimer = 1.5;
+        audio.blip("sine", 150, 0.05, 0.03);
+        return;
+      }
+    }
+
+    // 物品
+    if (tile === T.POTION) {
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + 50);
+      this.map[ny][nx] = T.EMPTY;
+      this.message = "获得生命药水 +50 HP";
+      this.messageTimer = 1.5;
+      fx.burst(this.ox + nx * this.cell + this.cell / 2, this.oy + ny * this.cell + this.cell / 2, "#ff6ece", 10, 100);
+      audio.blip("triangle", 500, 0.06, 0.04);
+    }
+
+    if (tile === T.ATK_UP) {
+      this.player.atk += 3;
+      this.map[ny][nx] = T.EMPTY;
+      this.message = "获得攻击宝石 +3 ATK";
+      this.messageTimer = 1.5;
+      fx.burst(this.ox + nx * this.cell + this.cell / 2, this.oy + ny * this.cell + this.cell / 2, "#ff8b8b", 10, 100);
+      audio.blip("triangle", 600, 0.06, 0.04);
+    }
+
+    if (tile === T.DEF_UP) {
+      this.player.def += 3;
+      this.map[ny][nx] = T.EMPTY;
+      this.message = "获得防御宝石 +3 DEF";
+      this.messageTimer = 1.5;
+      fx.burst(this.ox + nx * this.cell + this.cell / 2, this.oy + ny * this.cell + this.cell / 2, "#78beff", 10, 100);
+      audio.blip("triangle", 450, 0.06, 0.04);
+    }
+
+    if (tile === T.KEY) {
+      this.player.keys++;
+      this.map[ny][nx] = T.EMPTY;
+      this.message = "获得钥匙";
+      this.messageTimer = 1.5;
+      audio.blip("square", 350, 0.06, 0.04);
+    }
+
+    // 楼梯
+    if (tile === T.STAIRS) {
+      if (this.floor >= this.maxFloor) {
+        this.win(fx, audio);
+        return;
+      } else {
+        this.floor++;
+        this.startFloor();
+        audio.blip("triangle", 700, 0.1, 0.06);
+        return;
+      }
+    }
+
+    // 移动
+    this.player.x = nx;
+    this.player.y = ny;
+    this.moveCount++;
+  }
+
+  combat(monster, fx, audio) {
+    // 计算伤害
+    const playerDmg = Math.max(1, this.player.atk - monster.def);
+    const monsterDmg = Math.max(1, monster.atk - this.player.def);
+
+    // 计算回合数
+    const turnsToKill = Math.ceil(monster.hp / playerDmg);
+    const totalDmgTaken = turnsToKill * monsterDmg;
+
+    // 检查玩家是否能赢
+    if (this.player.hp <= totalDmgTaken) {
+      this.message = `无法击败 ${monster.name}！需要更多HP或属性`;
+      this.messageTimer = 2;
+      audio.blip("sawtooth", 100, 0.1, 0.05);
+      return;
+    }
+
+    // 执行战斗
+    this.player.hp -= totalDmgTaken;
+    this.player.gold += 10 + this.floor * 5;
+
+    // 移除怪物
+    const idx = this.monsters.indexOf(monster);
+    if (idx >= 0) this.monsters.splice(idx, 1);
+    this.map[monster.y][monster.x] = MagicTowerGame.TILE.EMPTY;
+
+    // 特效
+    fx.burst(
+      this.ox + monster.x * this.cell + this.cell / 2,
+      this.oy + monster.y * this.cell + this.cell / 2,
+      "#ff6ece", 20, 200
+    );
+    fx.addShake(6);
+
+    this.message = `击败 ${monster.name}！受到 ${totalDmgTaken} 伤害`;
+    this.messageTimer = 2;
+    audio.blip("triangle", 300, 0.1, 0.06);
+  }
+
+  win(fx, audio) {
+    this.over = true;
+    this.won = true;
+    fx.burst(this.core.w * 0.5, this.core.h * 0.5, "#84ffb3", 80, 500);
+    fx.addShake(15);
+    audio.blip("square", 880, 0.2, 0.08);
+    this.core.toast(`通关！总步数: ${this.moveCount} | 按 R 重新开始`);
+  }
+
+  gameOver() {
+    this.over = true;
+    this.core.fx.burst(this.core.w * 0.5, this.core.h * 0.5, "#ff6ece", 60, 400);
+    this.core.fx.addShake(12);
+    this.core.audio.blip("sawtooth", 150, 0.15, 0.07);
+    this.core.toast(`生命耗尽！按 R 重新开始`);
+  }
+
+  draw(ctx) {
+    const { w, h } = this.core;
+    const T = MagicTowerGame.TILE;
+    const cell = this.cell;
+
+    ctx.save();
+
+    // 绘制地图
+    for (let y = 0; y < this.gridSize; y++) {
+      for (let x = 0; x < this.gridSize; x++) {
+        const px = this.ox + x * cell;
+        const py = this.oy + y * cell;
+        const tile = this.map[y][x];
+
+        // 地板
+        ctx.fillStyle = "rgba(255,255,255,0.02)";
+        ctx.fillRect(px, py, cell - 1, cell - 1);
+
+        // 墙壁
+        if (tile === T.WALL) {
+          ctx.fillStyle = "rgba(120,190,255,0.2)";
+          roundRect(ctx, px, py, cell - 1, cell - 1, 3);
+          ctx.fill();
+          ctx.strokeStyle = "rgba(120,190,255,0.4)";
+          ctx.lineWidth = 1;
+          roundRect(ctx, px, py, cell - 1, cell - 1, 3);
+          ctx.stroke();
+        }
+
+        // 物品
+        if (tile === T.POTION || tile === T.ATK_UP || tile === T.DEF_UP || tile === T.KEY || tile === T.DOOR || tile === T.STAIRS) {
+          const item = MagicTowerGame.ITEMS[tile];
+          if (item) {
+            ctx.font = `${cell * 0.6}px system-ui`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(item.symbol, px + cell / 2, py + cell / 2);
+          }
+        }
+
+        // 怪物
+        if (tile === T.MONSTER) {
+          const monster = this.monsters.find(m => m.x === x && m.y === y);
+          if (monster) {
+            // 怪物背景
+            ctx.fillStyle = "rgba(255,110,206,0.15)";
+            roundRect(ctx, px, py, cell - 1, cell - 1, 3);
+            ctx.fill();
+
+            // 怪物符号
+            ctx.font = `${cell * 0.6}px system-ui`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(monster.symbol, px + cell / 2, py + cell / 2);
+
+            // 怪物血条
+            const barW = cell - 6;
+            const barH = 3;
+            const barX = px + 3;
+            const barY = py + cell - 6;
+            ctx.fillStyle = "rgba(255,255,255,0.1)";
+            ctx.fillRect(barX, barY, barW, barH);
+            ctx.fillStyle = "rgba(255,110,206,0.8)";
+            ctx.fillRect(barX, barY, barW * (monster.hp / monster.maxHp), barH);
+          }
+        }
+      }
+    }
+
+    // 绘制玩家
+    const playerPx = this.ox + this.player.x * cell;
+    const playerPy = this.oy + this.player.y * cell;
+
+    // 玩家发光效果
+    ctx.fillStyle = "rgba(132,255,179,0.2)";
+    ctx.beginPath();
+    ctx.arc(playerPx + cell / 2, playerPy + cell / 2, cell * 0.6, 0, TAU);
+    ctx.fill();
+
+    // 玩家符号
+    ctx.font = `${cell * 0.7}px system-ui`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.fillText("🧑", playerPx + cell / 2, playerPy + cell / 2);
+
+    // HUD - 玩家属性
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.font = "700 13px system-ui";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(`❤️ ${this.player.hp}/${this.player.maxHp}`, 10, 22);
+    ctx.fillText(`⚔️ ${this.player.atk}`, 10, 40);
+    ctx.fillText(`🛡️ ${this.player.def}`, 10, 58);
+    ctx.fillText(`🔑 ${this.player.keys}`, 10, 76);
+
+    // 楼层信息
+    ctx.textAlign = "right";
+    ctx.fillText(`第 ${this.floor}/${this.maxFloor} 层`, w - 10, 22);
+    ctx.fillText(`步数: ${this.moveCount}`, w - 10, 40);
+    ctx.fillText(`💰 ${this.player.gold}`, w - 10, 58);
+
+    // 消息提示
+    if (this.messageTimer > 0 && this.message) {
+      const alpha = Math.min(1, this.messageTimer);
+      ctx.fillStyle = `rgba(255,214,150,${alpha * 0.9})`;
+      ctx.font = "600 12px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(this.message, w / 2, this.oy + this.gridSize * cell + 20);
+    }
+
+    // 游戏结束提示
+    if (this.over) {
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(0, 0, w, h);
+
+      if (this.won) {
+        ctx.fillStyle = "rgba(132,255,179,0.9)";
+        ctx.font = "700 32px system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("通关成功！", w / 2, h / 2 - 30);
+
+        ctx.fillStyle = "rgba(255,255,255,0.8)";
+        ctx.font = "600 18px system-ui";
+        ctx.fillText(`总步数: ${this.moveCount}`, w / 2, h / 2 + 10);
+      } else {
+        ctx.fillStyle = "rgba(255,110,206,0.9)";
+        ctx.font = "700 32px system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("生命耗尽", w / 2, h / 2 - 30);
+      }
+
+      ctx.fillStyle = "rgba(255,255,255,0.5)";
+      ctx.font = "400 14px system-ui";
+      ctx.fillText("按 R 重新开始", w / 2, h / 2 + 45);
+    }
+
+    ctx.restore();
+  }
+}
+
 function drawMenuBackdrop(ctx, w, h) {
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
@@ -3792,6 +4331,7 @@ const games = {
   memory: new MemoryGame(core),
   game2048: new Game2048(core),
   bubble: new BubbleShooter(core),
+  tower: new MagicTowerGame(core),
 };
 
 async function startGameSafe(game) {
@@ -3813,6 +4353,7 @@ const btnSnake = document.getElementById("btnSnake");
 const btnMemory = document.getElementById("btnMemory");
 const btn2048 = document.getElementById("btn2048");
 const btnBubble = document.getElementById("btnBubble");
+const btnTower = document.getElementById("btnTower");
 
 btnTank.addEventListener("click", () => startGameSafe(games.tank));
 btnTetris.addEventListener("click", () => startGameSafe(games.tetris));
@@ -3824,6 +4365,7 @@ btnSnake.addEventListener("click", () => startGameSafe(games.snake));
 btnMemory.addEventListener("click", () => startGameSafe(games.memory));
 btn2048.addEventListener("click", () => startGameSafe(games.game2048));
 btnBubble.addEventListener("click", () => startGameSafe(games.bubble));
+btnTower.addEventListener("click", () => startGameSafe(games.tower));
 
 window.addEventListener("keydown", async (e) => {
   if (core.mode !== "menu") return;
@@ -3856,6 +4398,9 @@ window.addEventListener("keydown", async (e) => {
   }
   if (["Digit0", "Numpad0"].includes(e.code)) {
     startGameSafe(games.bubble);
+  }
+  if (["Minus", "NumpadSubtract"].includes(e.code)) {
+    startGameSafe(games.tower);
   }
 });
 
