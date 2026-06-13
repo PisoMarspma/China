@@ -763,7 +763,9 @@ class TetrisGame extends GameBase {
           this.gameOver();
           return;
         }
-        this.board[gy][gx] = piece.color;
+        if (gx >= 0 && gx < this.gridW && gy >= 0 && gy < this.gridH) {
+          this.board[gy][gx] = piece.color;
+        }
       }
     }
 
@@ -911,7 +913,7 @@ class TetrisGame extends GameBase {
     if (!this.over) {
       // ghost
       const current = this.currentPiece;
-      if (!current) return;
+      if (!current || !current.matrix) return;
 
       let gy = current.y;
       while (true) {
@@ -940,7 +942,9 @@ class TetrisGame extends GameBase {
     ctx.fillStyle = "rgba(235,245,255,0.9)";
     ctx.font = "700 14px system-ui";
     ctx.fillText("NEXT", sx + 12, sy + 26);
-    drawPiece(ctx, { ...this.nextPiece, x: 1, y: 1 }, sx + 22, sy + 40, cell);
+    if (this.nextPiece && this.nextPiece.matrix) {
+      drawPiece(ctx, { ...this.nextPiece, x: 1, y: 1 }, sx + 22, sy + 40, cell);
+    }
 
     ctx.fillStyle = "rgba(235,245,255,0.7)";
     ctx.font = "600 13px system-ui";
@@ -2350,9 +2354,12 @@ function drawCell(ctx, x, y, s, color) {
 }
 
 function drawPiece(ctx, piece, ox, oy, cell, ghost = false) {
+  if (!piece) return;
+  const m = piece.matrix || piece.m;
+  if (!m) return;
   for (let y = 0; y < 4; y++) {
     for (let x = 0; x < 4; x++) {
-      if (!piece.m[y][x]) continue;
+      if (!m[y] || !m[y][x]) continue;
       const px = ox + (piece.x + x) * cell;
       const py = oy + (piece.y + y) * cell;
       if (py < oy) continue;
@@ -2441,7 +2448,7 @@ class Core {
     this.restartBtn.hidden = true;
     if (this.active && this.active.onExit) this.active.onExit();
     this.active = null;
-    this.setHud("小游戏合集", "快捷键：1 / 2 / 3 / 4 / 5 / 6 / 7 开始；单击画面获取键盘焦点");
+    this.setHud("小游戏合集", "快捷键：1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 0 开始；单击画面获取键盘焦点");
     this.starfield.vx = 0;
     this.starfield.vy = 0;
     this.toastEl.hidden = true;
@@ -2454,9 +2461,18 @@ class Core {
     this.overlay.style.pointerEvents = "none";
     this.backBtn.hidden = false;
     this.restartBtn.hidden = false;
-    if (this.active && this.active.onExit) this.active.onExit();
+    if (this.active && this.active.onExit) {
+      try { this.active.onExit(); } catch (e) { console.warn("onExit error:", e); }
+    }
     this.active = game;
-    if (this.active.onEnter) this.active.onEnter();
+    try {
+      if (this.active.onEnter) this.active.onEnter();
+    } catch (e) {
+      console.error("onEnter error:", e);
+      this.showMenu();
+      this.toast("游戏启动失败，请查看控制台");
+      return;
+    }
     this.setHud(game.title, game.hint);
     this.toast(`${game.title}：开始！`);
     if (this.canvas.focus) this.canvas.focus();
@@ -2524,6 +2540,1223 @@ class Core {
   }
 }
 
+class MemoryGame extends GameBase {
+  // Emoji 主题
+  static EMOJIS = ['😀', '🐶', '🌸', '🍎', '🎸', '🚀', '⭐', '🎀', '🐱', '🌻', '🍕', '🎯', '💎', '🌈', '🎵', '🔥', '🌙', '🎪', '🦋', '🎨'];
+
+  constructor(core) {
+    super(core);
+    this.cards = [];
+    this.gridW = 4;
+    this.gridH = 4;
+    this.cell = 0;
+    this.ox = 0;
+    this.oy = 0;
+    this.level = 1;
+    this.score = 0;
+    this.moves = 0;
+    this.over = false;
+    this.flipped = [];
+    this.matched = new Set();
+    this.waiting = false;
+    this.waitTimer = 0;
+    this.pairsFound = 0;
+    this.totalPairs = 0;
+  }
+
+  get title() {
+    return "记忆翻牌";
+  }
+
+  get hint() {
+    return "点击翻牌 | 找出所有配对 | Esc 返回 | R 重开";
+  }
+
+  onEnter() {
+    this.over = false;
+    this.score = 0;
+    this.moves = 0;
+    this.level = 1;
+    this.startLevel();
+
+    this.core.starfield.vx = 0;
+    this.core.starfield.vy = 0;
+  }
+
+  startLevel() {
+    // 根据关卡调整网格大小
+    if (this.level <= 2) {
+      this.gridW = 4;
+      this.gridH = 4;
+    } else if (this.level <= 4) {
+      this.gridW = 5;
+      this.gridH = 4;
+    } else if (this.level <= 6) {
+      this.gridW = 6;
+      this.gridH = 5;
+    } else {
+      this.gridW = 6;
+      this.gridH = 6;
+    }
+
+    const { w, h } = this.core;
+    this.cell = Math.floor(Math.min(
+      (w - 80) / this.gridW,
+      (h - 120) / this.gridH,
+      80
+    ));
+    this.ox = Math.floor((w - this.gridW * this.cell) / 2);
+    this.oy = Math.floor((h - this.gridH * this.cell) / 2);
+
+    this.generateCards();
+    this.flipped = [];
+    this.matched = new Set();
+    this.waiting = false;
+    this.waitTimer = 0;
+    this.moves = 0;
+    this.pairsFound = 0;
+  }
+
+  generateCards() {
+    const totalCards = this.gridW * this.gridH;
+    this.totalPairs = totalCards / 2;
+
+    // 选择 emoji
+    const selectedEmojis = [];
+    for (let i = 0; i < this.totalPairs; i++) {
+      selectedEmojis.push(MemoryGame.EMOJIS[i % MemoryGame.EMOJIS.length]);
+    }
+
+    // 创建配对并打乱
+    const pairs = [...selectedEmojis, ...selectedEmojis];
+    this.shuffleArray(pairs);
+
+    // 生成卡片对象
+    this.cards = [];
+    for (let i = 0; i < totalCards; i++) {
+      const row = Math.floor(i / this.gridW);
+      const col = i % this.gridW;
+      this.cards.push({
+        x: this.ox + col * this.cell,
+        y: this.oy + row * this.cell,
+        emoji: pairs[i],
+        index: i,
+        flipped: false,
+        matched: false,
+      });
+    }
+  }
+
+  shuffleArray(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+      const j = randi(0, i);
+      [array[i], array[j]] = [array[j], array[i]];
+    }
+  }
+
+  update(dt) {
+    const { input } = this.core;
+    if (this.over) return;
+
+    // 等待翻牌动画
+    if (this.waiting) {
+      this.waitTimer -= dt;
+      if (this.waitTimer <= 0) {
+        this.waiting = false;
+        this.checkMatch();
+      }
+      return;
+    }
+
+    // 点击翻牌
+    if (input.mouse.down) {
+      const mx = input.mouse.x;
+      const my = input.mouse.y;
+
+      for (const card of this.cards) {
+        if (card.matched || card.flipped) continue;
+
+        if (mx >= card.x && mx <= card.x + this.cell &&
+            my >= card.y && my <= card.y + this.cell) {
+          this.flipCard(card);
+          break;
+        }
+      }
+    }
+  }
+
+  flipCard(card) {
+    if (this.flipped.length >= 2) return;
+
+    card.flipped = true;
+    this.flipped.push(card);
+    this.core.audio.blip("sine", 440 + this.flipped.length * 100, 0.08, 0.05);
+
+    if (this.flipped.length === 2) {
+      this.moves++;
+      this.waiting = true;
+      this.waitTimer = 0.8;
+    }
+  }
+
+  checkMatch() {
+    const [card1, card2] = this.flipped;
+
+    if (card1.emoji === card2.emoji) {
+      // 配对成功
+      card1.matched = true;
+      card2.matched = true;
+      this.matched.add(card1.index);
+      this.matched.add(card2.index);
+      this.pairsFound++;
+      this.score += 100;
+
+      this.core.fx.burst(
+        (card1.x + card2.x) / 2 + this.cell / 2,
+        (card1.y + card2.y) / 2 + this.cell / 2,
+        "#84ffb3", 20, 200
+      );
+      this.core.audio.blip("triangle", 660, 0.1, 0.06);
+
+      // 检查是否通关
+      if (this.pairsFound === this.totalPairs) {
+        this.levelComplete();
+      }
+    } else {
+      // 配对失败
+      card1.flipped = false;
+      card2.flipped = false;
+      this.core.audio.blip("sawtooth", 180, 0.08, 0.04);
+    }
+
+    this.flipped = [];
+  }
+
+  levelComplete() {
+    this.score += this.level * 200;
+    this.core.fx.burst(this.core.w * 0.5, this.core.h * 0.5, "#78beff", 60, 400);
+    this.core.fx.addShake(12);
+    this.core.audio.blip("square", 880, 0.15, 0.07);
+    this.core.toast(`第 ${this.level} 关完成！`);
+
+    this.level++;
+    setTimeout(() => {
+      if (!this.over) this.startLevel();
+    }, 1500);
+  }
+
+  draw(ctx) {
+    const cell = this.cell;
+
+    ctx.save();
+
+    // 背景面板
+    const panelW = this.gridW * cell + 20;
+    const panelH = this.gridH * cell + 20;
+    const px = this.ox - 10;
+    const py = this.oy - 10;
+
+    ctx.fillStyle = "rgba(255,255,255,0.04)";
+    roundRect(ctx, px, py, panelW, panelH, 16);
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(120,190,255,0.18)";
+    ctx.lineWidth = 2;
+    roundRect(ctx, px, py, panelW, panelH, 16);
+    ctx.stroke();
+
+    // 绘制卡片
+    for (const card of this.cards) {
+      const cx = card.x;
+      const cy = card.y;
+      const padding = 4;
+
+      if (card.matched) {
+        // 已配对 - 半透明显示
+        ctx.fillStyle = "rgba(132,255,179,0.15)";
+        roundRect(ctx, cx + padding, cy + padding, cell - padding * 2, cell - padding * 2, 8);
+        ctx.fill();
+
+        ctx.strokeStyle = "rgba(132,255,179,0.3)";
+        ctx.lineWidth = 2;
+        roundRect(ctx, cx + padding, cy + padding, cell - padding * 2, cell - padding * 2, 8);
+        ctx.stroke();
+
+        // 显示 emoji
+        ctx.font = `${cell * 0.5}px system-ui`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(255,255,255,0.5)";
+        ctx.fillText(card.emoji, cx + cell / 2, cy + cell / 2);
+      } else if (card.flipped) {
+        // 翻开状态 - 显示 emoji
+        ctx.fillStyle = "rgba(120,190,255,0.2)";
+        roundRect(ctx, cx + padding, cy + padding, cell - padding * 2, cell - padding * 2, 8);
+        ctx.fill();
+
+        ctx.strokeStyle = "rgba(120,190,255,0.6)";
+        ctx.lineWidth = 2;
+        roundRect(ctx, cx + padding, cy + padding, cell - padding * 2, cell - padding * 2, 8);
+        ctx.stroke();
+
+        ctx.font = `${cell * 0.5}px system-ui`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.fillText(card.emoji, cx + cell / 2, cy + cell / 2);
+      } else {
+        // 未翻开 - 显示问号
+        ctx.fillStyle = "rgba(255,255,255,0.06)";
+        roundRect(ctx, cx + padding, cy + padding, cell - padding * 2, cell - padding * 2, 8);
+        ctx.fill();
+
+        ctx.strokeStyle = "rgba(120,190,255,0.25)";
+        ctx.lineWidth = 2;
+        roundRect(ctx, cx + padding, cy + padding, cell - padding * 2, cell - padding * 2, 8);
+        ctx.stroke();
+
+        // 问号
+        ctx.font = `700 ${cell * 0.4}px system-ui`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(120,190,255,0.5)";
+        ctx.fillText("?", cx + cell / 2, cy + cell / 2);
+      }
+    }
+
+    // HUD
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.font = "700 14px system-ui";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(`关卡: ${this.level}`, 18, 26);
+    ctx.fillText(`得分: ${this.score}`, 18, 46);
+    ctx.fillText(`步数: ${this.moves}`, 18, 66);
+    ctx.fillText(`配对: ${this.pairsFound}/${this.totalPairs}`, 18, 86);
+
+    ctx.restore();
+  }
+}
+
+class Game2048 extends GameBase {
+  // 颜色配置 - 霓虹风格
+  static TILE_COLORS = {
+    2: { bg: "rgba(120,190,255,0.15)", text: "rgba(120,190,255,0.9)", glow: "rgba(120,190,255,0.3)" },
+    4: { bg: "rgba(132,255,179,0.15)", text: "rgba(132,255,179,0.9)", glow: "rgba(132,255,179,0.3)" },
+    8: { bg: "rgba(255,110,206,0.15)", text: "rgba(255,110,206,0.9)", glow: "rgba(255,110,206,0.3)" },
+    16: { bg: "rgba(255,180,100,0.15)", text: "rgba(255,180,100,0.9)", glow: "rgba(255,180,100,0.3)" },
+    32: { bg: "rgba(255,139,139,0.2)", text: "rgba(255,139,139,0.95)", glow: "rgba(255,139,139,0.4)" },
+    64: { bg: "rgba(168,164,255,0.2)", text: "rgba(168,164,255,0.95)", glow: "rgba(168,164,255,0.4)" },
+    128: { bg: "rgba(120,190,255,0.25)", text: "rgba(255,255,255,0.95)", glow: "rgba(120,190,255,0.5)" },
+    256: { bg: "rgba(132,255,179,0.25)", text: "rgba(255,255,255,0.95)", glow: "rgba(132,255,179,0.5)" },
+    512: { bg: "rgba(255,110,206,0.3)", text: "rgba(255,255,255,0.95)", glow: "rgba(255,110,206,0.6)" },
+    1024: { bg: "rgba(255,214,150,0.3)", text: "rgba(255,255,255,0.95)", glow: "rgba(255,214,150,0.6)" },
+    2048: { bg: "rgba(255,215,0,0.35)", text: "rgba(255,255,255,1)", glow: "rgba(255,215,0,0.7)" },
+  };
+
+  constructor(core) {
+    super(core);
+    this.grid = [];
+    this.gridSize = 4;
+    this.cell = 0;
+    this.ox = 0;
+    this.oy = 0;
+    this.score = 0;
+    this.bestScore = 0;
+    this.over = false;
+    this.won = false;
+    this.mergedCells = [];
+    this.newCell = null;
+    this.moveInProgress = false;
+    this.swipeStart = null;
+  }
+
+  get title() {
+    return "2048";
+  }
+
+  get hint() {
+    return "方向键/鼠标滑动 | 合并数字 | 追求最高分 | Esc 返回 | R 重开";
+  }
+
+  onEnter() {
+    this.over = false;
+    this.won = false;
+    this.score = 0;
+    this.bestScore = parseInt(localStorage.getItem("2048_best") || "0");
+    this.startNewGame();
+
+    this.core.starfield.vx = 0;
+    this.core.starfield.vy = 0;
+  }
+
+  startNewGame() {
+    // 初始化空网格
+    this.grid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(0));
+    this.mergedCells = [];
+    this.newCell = null;
+
+    // 添加两个初始方块
+    this.addRandomTile();
+    this.addRandomTile();
+
+    this.calculateLayout();
+  }
+
+  calculateLayout() {
+    const { w, h } = this.core;
+    const maxCellSize = 90;
+    const padding = 8;
+    const totalPadding = (this.gridSize + 1) * padding;
+    this.cell = Math.min(
+      Math.floor((w - 100) / this.gridSize),
+      Math.floor((h - 140) / this.gridSize),
+      maxCellSize
+    );
+    const boardW = this.gridSize * this.cell + totalPadding;
+    const boardH = this.gridSize * this.cell + totalPadding;
+    this.ox = Math.floor((w - boardW) / 2);
+    this.oy = Math.floor((h - boardH) / 2) + 20;
+    this.padding = padding;
+  }
+
+  addRandomTile() {
+    const emptyCells = [];
+    for (let r = 0; r < this.gridSize; r++) {
+      for (let c = 0; c < this.gridSize; c++) {
+        if (this.grid[r][c] === 0) {
+          emptyCells.push({ r, c });
+        }
+      }
+    }
+
+    if (emptyCells.length === 0) return;
+
+    const { r, c } = emptyCells[randi(0, emptyCells.length - 1)];
+    const value = Math.random() < 0.9 ? 2 : 4;
+    this.grid[r][c] = value;
+    this.newCell = { r, c, value };
+  }
+
+  update(_dt) {
+    const { input, audio } = this.core;
+
+    if (this.over) {
+      // 游戏结束后按任意键重新开始
+      if (input.consumeOnce("KeyR")) {
+        this.startNewGame();
+        this.over = false;
+        this.score = 0;
+      }
+      return;
+    }
+
+    // 键盘输入
+    let direction = null;
+    if (input.consumeOnce("ArrowLeft")) direction = "left";
+    else if (input.consumeOnce("ArrowRight")) direction = "right";
+    else if (input.consumeOnce("ArrowUp")) direction = "up";
+    else if (input.consumeOnce("ArrowDown")) direction = "down";
+
+    // 鼠标滑动输入
+    if (input.mouse.down) {
+      if (!this.swipeStart) {
+        this.swipeStart = { x: input.mouse.x, y: input.mouse.y };
+      }
+    } else if (this.swipeStart) {
+      const dx = input.mouse.x - this.swipeStart.x;
+      const dy = input.mouse.y - this.swipeStart.y;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist > 30) {
+        if (Math.abs(dx) > Math.abs(dy)) {
+          direction = dx > 0 ? "right" : "left";
+        } else {
+          direction = dy > 0 ? "down" : "up";
+        }
+      }
+      this.swipeStart = null;
+    }
+
+    if (direction) {
+      this.move(direction, audio);
+    }
+  }
+
+  move(direction, audio) {
+    this.mergedCells = [];
+    this.newCell = null;
+    let moved = false;
+
+    // 根据方向处理移动
+    const processLine = (line) => {
+      // 移除零
+      const filtered = line.filter(v => v !== 0);
+      const merged = [];
+      let scoreGain = 0;
+
+      // 合并相邻相同数字
+      for (let i = 0; i < filtered.length; i++) {
+        if (i + 1 < filtered.length && filtered[i] === filtered[i + 1]) {
+          const newValue = filtered[i] * 2;
+          merged.push(newValue);
+          scoreGain += newValue;
+          this.mergedCells.push(newValue);
+          i++; // 跳过下一个
+        } else {
+          merged.push(filtered[i]);
+        }
+      }
+
+      // 补零
+      while (merged.length < this.gridSize) {
+        merged.push(0);
+      }
+
+      return { merged, scoreGain };
+    };
+
+    if (direction === "left") {
+      for (let r = 0; r < this.gridSize; r++) {
+        const { merged, scoreGain } = processLine(this.grid[r]);
+        if (merged.some((v, i) => v !== this.grid[r][i])) moved = true;
+        this.grid[r] = merged;
+        this.score += scoreGain;
+      }
+    } else if (direction === "right") {
+      for (let r = 0; r < this.gridSize; r++) {
+        const reversed = [...this.grid[r]].reverse();
+        const { merged, scoreGain } = processLine(reversed);
+        const result = merged.reverse();
+        if (result.some((v, i) => v !== this.grid[r][i])) moved = true;
+        this.grid[r] = result;
+        this.score += scoreGain;
+      }
+    } else if (direction === "up") {
+      for (let c = 0; c < this.gridSize; c++) {
+        const column = this.grid.map(row => row[c]);
+        const { merged, scoreGain } = processLine(column);
+        if (merged.some((v, i) => v !== this.grid[i][c])) moved = true;
+        for (let r = 0; r < this.gridSize; r++) {
+          this.grid[r][c] = merged[r];
+        }
+        this.score += scoreGain;
+      }
+    } else if (direction === "down") {
+      for (let c = 0; c < this.gridSize; c++) {
+        const column = this.grid.map(row => row[c]).reverse();
+        const { merged, scoreGain } = processLine(column);
+        const result = merged.reverse();
+        if (result.some((v, i) => v !== this.grid[i][c])) moved = true;
+        for (let r = 0; r < this.gridSize; r++) {
+          this.grid[r][c] = result[r];
+        }
+        this.score += scoreGain;
+      }
+    }
+
+    if (moved) {
+      // 播放移动音效
+      audio.blip("sine", 220, 0.05, 0.03);
+
+      // 如果有合并，播放合并音效
+      if (this.mergedCells.length > 0) {
+        const maxMerged = Math.max(...this.mergedCells);
+        const freq = 300 + Math.log2(maxMerged) * 60;
+        audio.blip("triangle", freq, 0.08, 0.05);
+        this.core.fx.burst(this.core.w * 0.5, this.core.h * 0.5, "#78beff", this.mergedCells.length * 3, 120);
+      }
+
+      // 添加新方块
+      this.addRandomTile();
+
+      // 更新最高分
+      if (this.score > this.bestScore) {
+        this.bestScore = this.score;
+        localStorage.setItem("2048_best", this.bestScore.toString());
+      }
+
+      // 检查游戏是否结束
+      if (!this.canMove()) {
+        this.gameOver();
+      }
+    }
+  }
+
+  canMove() {
+    // 检查是否有空格
+    for (let r = 0; r < this.gridSize; r++) {
+      for (let c = 0; c < this.gridSize; c++) {
+        if (this.grid[r][c] === 0) return true;
+      }
+    }
+
+    // 检查是否有相邻相同数字
+    for (let r = 0; r < this.gridSize; r++) {
+      for (let c = 0; c < this.gridSize; c++) {
+        const current = this.grid[r][c];
+        // 检查右边
+        if (c + 1 < this.gridSize && this.grid[r][c + 1] === current) return true;
+        // 检查下面
+        if (r + 1 < this.gridSize && this.grid[r + 1][c] === current) return true;
+      }
+    }
+
+    return false;
+  }
+
+  gameOver() {
+    this.over = true;
+    this.core.fx.burst(this.core.w * 0.5, this.core.h * 0.5, "#ff6ece", 60, 400);
+    this.core.fx.addShake(12);
+    this.core.audio.blip("sawtooth", 150, 0.15, 0.07);
+    this.core.toast(`游戏结束！得分: ${this.score} | 按 R 重新开始`);
+  }
+
+  draw(ctx) {
+    const { w, h } = this.core;
+    const { cell, ox, oy, padding, gridSize } = this;
+
+    ctx.save();
+
+    // 背景面板
+    const boardW = gridSize * cell + (gridSize + 1) * padding;
+    const boardH = gridSize * cell + (gridSize + 1) * padding;
+
+    ctx.fillStyle = "rgba(255,255,255,0.04)";
+    roundRect(ctx, ox - 8, oy - 8, boardW + 16, boardH + 16, 16);
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(120,190,255,0.18)";
+    ctx.lineWidth = 2;
+    roundRect(ctx, ox - 8, oy - 8, boardW + 16, boardH + 16, 16);
+    ctx.stroke();
+
+    // 绘制网格背景
+    for (let r = 0; r < gridSize; r++) {
+      for (let c = 0; c < gridSize; c++) {
+        const x = ox + padding + c * (cell + padding);
+        const y = oy + padding + r * (cell + padding);
+
+        ctx.fillStyle = "rgba(255,255,255,0.03)";
+        roundRect(ctx, x, y, cell, cell, 8);
+        ctx.fill();
+      }
+    }
+
+    // 绘制方块
+    for (let r = 0; r < gridSize; r++) {
+      for (let c = 0; c < gridSize; c++) {
+        const value = this.grid[r][c];
+        if (value === 0) continue;
+
+        const x = ox + padding + c * (cell + padding);
+        const y = oy + padding + r * (cell + padding);
+
+        // 获取颜色配置
+        const colorConfig = Game2048.TILE_COLORS[value] || {
+          bg: "rgba(255,215,0,0.4)",
+          text: "rgba(255,255,255,1)",
+          glow: "rgba(255,215,0,0.8)"
+        };
+
+        // 绘制发光效果
+        ctx.fillStyle = colorConfig.glow;
+        roundRect(ctx, x - 2, y - 2, cell + 4, cell + 4, 10);
+        ctx.fill();
+
+        // 绘制方块背景
+        ctx.fillStyle = colorConfig.bg;
+        roundRect(ctx, x, y, cell, cell, 8);
+        ctx.fill();
+
+        // 绘制方块边框
+        ctx.strokeStyle = colorConfig.text;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.3;
+        roundRect(ctx, x, y, cell, cell, 8);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+
+        // 绘制数字
+        const fontSize = value < 100 ? cell * 0.5 : value < 1000 ? cell * 0.4 : cell * 0.32;
+        ctx.font = `700 ${fontSize}px system-ui`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = colorConfig.text;
+        ctx.fillText(value.toString(), x + cell / 2, y + cell / 2);
+      }
+    }
+
+    // HUD
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.font = "700 14px system-ui";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(`得分: ${this.score}`, 18, 26);
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.font = "600 12px system-ui";
+    ctx.fillText(`最高分: ${this.bestScore}`, 18, 46);
+
+    // 游戏结束提示
+    if (this.over) {
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.fillStyle = "rgba(255,110,206,0.9)";
+      ctx.font = "700 32px system-ui";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("游戏结束", w / 2, h / 2 - 30);
+
+      ctx.fillStyle = "rgba(255,255,255,0.8)";
+      ctx.font = "600 18px system-ui";
+      ctx.fillText(`最终得分: ${this.score}`, w / 2, h / 2 + 10);
+
+      ctx.fillStyle = "rgba(255,255,255,0.5)";
+      ctx.font = "400 14px system-ui";
+      ctx.fillText("按 R 重新开始", w / 2, h / 2 + 45);
+    }
+
+    ctx.restore();
+  }
+}
+
+class BubbleShooter extends GameBase {
+  // 泡泡颜色配置 - 霓虹风格
+  static BUBBLE_COLORS = [
+    { fill: "rgba(120,190,255,0.9)", glow: "rgba(120,190,255,0.4)", name: "blue" },
+    { fill: "rgba(255,110,206,0.9)", glow: "rgba(255,110,206,0.4)", name: "pink" },
+    { fill: "rgba(132,255,179,0.9)", glow: "rgba(132,255,179,0.4)", name: "green" },
+    { fill: "rgba(255,180,100,0.9)", glow: "rgba(255,180,100,0.4)", name: "orange" },
+    { fill: "rgba(168,164,255,0.9)", glow: "rgba(168,164,255,0.4)", name: "purple" },
+  ];
+
+  constructor(core) {
+    super(core);
+    this.grid = [];
+    this.cols = 10;
+    this.rows = 12;
+    this.bubbleR = 18;
+    this.ox = 0;
+    this.oy = 0;
+    this.cellW = 0;
+    this.cellH = 0;
+    this.score = 0;
+    this.level = 1;
+    this.targetScore = 500;
+    this.over = false;
+    this.won = false;
+    this.shooter = null;
+    this.flyingBubble = null;
+    this.nextColor = 0;
+    this.pushTimer = 0;
+    this.pushInterval = 15; // 秒
+  }
+
+  get title() {
+    return "泡泡龙";
+  }
+
+  get hint() {
+    return "←→ 瞄准 | 空格发射 | 消除3个以上得分 | Esc 返回 | R 重开";
+  }
+
+  onEnter() {
+    this.over = false;
+    this.won = false;
+    this.score = 0;
+    this.level = 1;
+    this.targetScore = 500;
+    this.initGame();
+
+    this.core.starfield.vx = 0;
+    this.core.starfield.vy = 0;
+  }
+
+  onExit() {
+    this.grid = [];
+    this.flyingBubble = null;
+    this.shooter = null;
+  }
+
+  initGame() {
+    this.calculateLayout();
+
+    // 初始化网格
+    this.grid = Array.from({ length: this.rows }, () => Array(this.cols).fill(-1));
+
+    // 生成初始泡泡行（顶部5行）
+    for (let r = 0; r < 5; r++) {
+      this.fillRow(r);
+    }
+
+    // 初始化发射器
+    this.shooter = {
+      x: this.ox + (this.cols * this.cellW) / 2,
+      y: this.oy + this.rows * this.cellH + 40,
+      angle: -Math.PI / 2,
+      speed: 500,
+    };
+
+    this.flyingBubble = null;
+    this.nextColor = this.getRandomColor();
+    this.pushTimer = this.pushInterval;
+  }
+
+  calculateLayout() {
+    const { w } = this.core;
+    this.cellW = this.bubbleR * 2 + 2;
+    this.cellH = this.bubbleR * 1.75;
+    const boardW = this.cols * this.cellW;
+    this.ox = Math.floor((w - boardW) / 2);
+    this.oy = 60;
+  }
+
+  getRandomColor() {
+    // 只使用当前网格中已存在的颜色
+    const usedColors = new Set();
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.grid[r][c] >= 0) {
+          usedColors.add(this.grid[r][c]);
+        }
+      }
+    }
+
+    if (usedColors.size === 0) {
+      return randi(0, BubbleShooter.BUBBLE_COLORS.length - 1);
+    }
+
+    const colorsArray = Array.from(usedColors);
+    return colorsArray[randi(0, colorsArray.length - 1)];
+  }
+
+  fillRow(row) {
+    for (let c = 0; c < this.cols; c++) {
+      this.grid[row][c] = randi(0, BubbleShooter.BUBBLE_COLORS.length - 1);
+    }
+  }
+
+  getBubblePos(row, col) {
+    const offset = row % 2 === 1 ? this.cellW / 2 : 0;
+    return {
+      x: this.ox + col * this.cellW + offset + this.cellW / 2,
+      y: this.oy + row * this.cellH + this.cellH / 2,
+    };
+  }
+
+  update(dt) {
+    const { input, audio } = this.core;
+    if (!this.shooter) return;
+
+    if (this.over) {
+      if (input.consumeOnce("KeyR")) {
+        this.initGame();
+        this.over = false;
+        this.score = 0;
+      }
+      return;
+    }
+
+    // 瞄准控制
+    const aimSpeed = 2.5;
+    if (input.isDown("ArrowLeft")) {
+      this.shooter.angle = Math.max(-Math.PI + 0.2, this.shooter.angle - aimSpeed * dt);
+    }
+    if (input.isDown("ArrowRight")) {
+      this.shooter.angle = Math.min(-0.2, this.shooter.angle + aimSpeed * dt);
+    }
+
+    // 发射泡泡
+    if (input.consumeOnce("Space") && !this.flyingBubble) {
+      this.flyingBubble = {
+        x: this.shooter.x,
+        y: this.shooter.y,
+        vx: Math.cos(this.shooter.angle) * this.shooter.speed,
+        vy: Math.sin(this.shooter.angle) * this.shooter.speed,
+        color: this.nextColor,
+      };
+      this.nextColor = this.getRandomColor();
+      audio.blip("square", 300, 0.06, 0.04);
+    }
+
+    // 更新飞行泡泡
+    if (this.flyingBubble) {
+      const bubble = this.flyingBubble;
+      bubble.x += bubble.vx * dt;
+      bubble.y += bubble.vy * dt;
+
+      // 墙壁反弹
+      if (bubble.x - this.bubbleR < this.ox) {
+        bubble.x = this.ox + this.bubbleR;
+        bubble.vx = Math.abs(bubble.vx);
+      }
+      if (bubble.x + this.bubbleR > this.ox + this.cols * this.cellW) {
+        bubble.x = this.ox + this.cols * this.cellW - this.bubbleR;
+        bubble.vx = -Math.abs(bubble.vx);
+      }
+
+      // 顶部碰撞
+      if (bubble.y - this.bubbleR < this.oy) {
+        this.snapBubble(bubble);
+        return;
+      }
+
+      // 碰撞检测
+      for (let r = 0; r < this.rows; r++) {
+        for (let c = 0; c < this.cols; c++) {
+          if (this.grid[r][c] < 0) continue;
+          const pos = this.getBubblePos(r, c);
+          const dist = Math.hypot(bubble.x - pos.x, bubble.y - pos.y);
+          if (dist < this.bubbleR * 1.8) {
+            this.snapBubble(bubble);
+            return;
+          }
+        }
+      }
+
+      // 超出边界
+      if (bubble.y > this.oy + this.rows * this.cellH + 100) {
+        this.flyingBubble = null;
+      }
+    }
+
+    // 定时下压
+    this.pushTimer -= dt;
+    if (this.pushTimer <= 0) {
+      this.pushTimer = this.pushInterval;
+      this.pushDown();
+      audio.blip("sawtooth", 100, 0.1, 0.05);
+      fx.addShake(4);
+    }
+  }
+
+  snapBubble(bubble) {
+    const { fx, audio } = this.core;
+
+    // 找到最近的网格位置
+    let bestR = 0, bestC = 0, bestDist = Infinity;
+
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.grid[r][c] >= 0) continue;
+        const pos = this.getBubblePos(r, c);
+        const dist = Math.hypot(bubble.x - pos.x, bubble.y - pos.y);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestR = r;
+          bestC = c;
+        }
+      }
+    }
+
+    // 放置泡泡
+    this.grid[bestR][bestC] = bubble.color;
+    this.flyingBubble = null;
+
+    // 检查消除
+    const matches = this.findMatches(bestR, bestC, bubble.color);
+
+    if (matches.length >= 3) {
+      // 消除泡泡
+      for (const { r, c } of matches) {
+        this.grid[r][c] = -1;
+      }
+
+      // 得分
+      const points = matches.length * 10 + (matches.length - 3) * 5;
+      this.score += points;
+
+      // 检查是否达到目标分数
+      if (this.score >= this.targetScore) {
+        this.level++;
+        this.targetScore += 300;
+        this.core.toast(`第 ${this.level} 关！目标分数: ${this.targetScore}`);
+      }
+
+      // 特效和音效
+      const pos = this.getBubblePos(bestR, bestC);
+      fx.burst(pos.x, pos.y, BubbleShooter.BUBBLE_COLORS[bubble.color].fill, matches.length * 5, 200);
+      fx.addShake(matches.length * 2);
+      audio.blip("triangle", 400 + matches.length * 50, 0.1, 0.06);
+
+      // 检查悬空泡泡
+      this.removeFloating();
+    } else {
+      audio.blip("sine", 200, 0.04, 0.03);
+    }
+
+    // 检查游戏结束
+    this.checkGameOver();
+  }
+
+  findMatches(row, col, color) {
+    const matches = [];
+    const visited = new Set();
+
+    const dfs = (r, c) => {
+      const key = `${r},${c}`;
+      if (visited.has(key)) return;
+      if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) return;
+      if (this.grid[r][c] !== color) return;
+
+      visited.add(key);
+      matches.push({ r, c });
+
+      // 6方向邻居
+      const offsets = [
+        [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0]
+      ];
+      // 奇数行偏移
+      const oddOffsets = [
+        [-1, -1], [-1, 0], [0, -1], [0, 1], [1, -1], [1, 0]
+      ];
+
+      const isOdd = r % 2 === 1;
+      const dirs = isOdd ? oddOffsets : offsets;
+
+      for (const [dr, dc] of dirs) {
+        dfs(r + dr, c + dc);
+      }
+    };
+
+    dfs(row, col);
+    return matches;
+  }
+
+  removeFloating() {
+    // 标记所有连接到顶部的泡泡
+    const connected = new Set();
+
+    const dfs = (r, c) => {
+      const key = `${r},${c}`;
+      if (connected.has(key)) return;
+      if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) return;
+      if (this.grid[r][c] < 0) return;
+
+      connected.add(key);
+
+      const offsets = [
+        [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0]
+      ];
+      const oddOffsets = [
+        [-1, -1], [-1, 0], [0, -1], [0, 1], [1, -1], [1, 0]
+      ];
+
+      const isOdd = r % 2 === 1;
+      const dirs = isOdd ? oddOffsets : offsets;
+
+      for (const [dr, dc] of dirs) {
+        dfs(r + dr, c + dc);
+      }
+    };
+
+    // 从顶部开始搜索
+    for (let c = 0; c < this.cols; c++) {
+      if (this.grid[0][c] >= 0) {
+        dfs(0, c);
+      }
+    }
+
+    // 移除悬空泡泡
+    let floatingCount = 0;
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.grid[r][c] >= 0 && !connected.has(`${r},${c}`)) {
+          this.grid[r][c] = -1;
+          floatingCount++;
+        }
+      }
+    }
+
+    if (floatingCount > 0) {
+      this.score += floatingCount * 15;
+    }
+  }
+
+  pushDown() {
+    // 检查最后一行是否有泡泡
+    for (let c = 0; c < this.cols; c++) {
+      if (this.grid[this.rows - 1][c] >= 0) {
+        this.gameOver();
+        return;
+      }
+    }
+
+    // 下移所有行
+    for (let r = this.rows - 1; r > 0; r--) {
+      this.grid[r] = [...this.grid[r - 1]];
+    }
+
+    // 生成新行
+    this.fillRow(0);
+  }
+
+  checkGameOver() {
+    // 检查泡泡是否到达底部
+    for (let c = 0; c < this.cols; c++) {
+      if (this.grid[this.rows - 1][c] >= 0) {
+        this.gameOver();
+        return;
+      }
+    }
+  }
+
+  gameOver() {
+    this.over = true;
+    this.core.fx.burst(this.core.w * 0.5, this.core.h * 0.5, "#ff6ece", 60, 400);
+    this.core.fx.addShake(12);
+    this.core.audio.blip("sawtooth", 150, 0.15, 0.07);
+    this.core.toast(`游戏结束！得分: ${this.score} | 按 R 重新开始`);
+  }
+
+  draw(ctx) {
+    if (!this.shooter) return;
+
+    const { w, h } = this.core;
+
+    ctx.save();
+
+    // 绘制游戏区域边框
+    const boardW = this.cols * this.cellW;
+    const boardH = this.rows * this.cellH;
+
+    ctx.fillStyle = "rgba(255,255,255,0.03)";
+    roundRect(ctx, this.ox - 8, this.oy - 8, boardW + 16, boardH + 80, 12);
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(120,190,255,0.15)";
+    ctx.lineWidth = 2;
+    roundRect(ctx, this.ox - 8, this.oy - 8, boardW + 16, boardH + 80, 12);
+    ctx.stroke();
+
+    // 绘制网格中的泡泡
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.grid[r][c] < 0) continue;
+        const color = BubbleShooter.BUBBLE_COLORS[this.grid[r][c]];
+        const pos = this.getBubblePos(r, c);
+
+        // 发光效果
+        ctx.fillStyle = color.glow;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, this.bubbleR + 3, 0, TAU);
+        ctx.fill();
+
+        // 泡泡主体
+        ctx.fillStyle = color.fill;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, this.bubbleR, 0, TAU);
+        ctx.fill();
+
+        // 高光
+        ctx.fillStyle = "rgba(255,255,255,0.3)";
+        ctx.beginPath();
+        ctx.arc(pos.x - this.bubbleR * 0.3, pos.y - this.bubbleR * 0.3, this.bubbleR * 0.3, 0, TAU);
+        ctx.fill();
+      }
+    }
+
+    // 绘制发射器
+    ctx.save();
+    ctx.translate(this.shooter.x, this.shooter.y);
+
+    // 发射器底座
+    ctx.fillStyle = "rgba(120,190,255,0.2)";
+    ctx.beginPath();
+    ctx.arc(0, 0, 25, 0, TAU);
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(120,190,255,0.5)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, 25, 0, TAU);
+    ctx.stroke();
+
+    // 瞄准线
+    ctx.strokeStyle = "rgba(255,255,255,0.3)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    const lineLen = 100;
+    ctx.lineTo(
+      Math.cos(this.shooter.angle) * lineLen,
+      Math.sin(this.shooter.angle) * lineLen
+    );
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.restore();
+
+    // 绘制飞行中的泡泡
+    if (this.flyingBubble) {
+      const bubble = this.flyingBubble;
+      const color = BubbleShooter.BUBBLE_COLORS[bubble.color];
+
+      ctx.fillStyle = color.glow;
+      ctx.beginPath();
+      ctx.arc(bubble.x, bubble.y, this.bubbleR + 3, 0, TAU);
+      ctx.fill();
+
+      ctx.fillStyle = color.fill;
+      ctx.beginPath();
+      ctx.arc(bubble.x, bubble.y, this.bubbleR, 0, TAU);
+      ctx.fill();
+    }
+
+    // 绘制下一个泡泡
+    const nextColor = BubbleShooter.BUBBLE_COLORS[this.nextColor];
+    ctx.fillStyle = nextColor.fill;
+    ctx.beginPath();
+    ctx.arc(this.shooter.x, this.shooter.y + 40, this.bubbleR * 0.8, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.font = "600 10px system-ui";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("NEXT", this.shooter.x, this.shooter.y + 58);
+
+    // HUD
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.font = "700 14px system-ui";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(`得分: ${this.score}`, 18, 26);
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.font = "600 12px system-ui";
+    ctx.fillText(`关卡: ${this.level} | 目标: ${this.targetScore}`, 18, 46);
+
+    // 下压倒计时
+    ctx.fillStyle = "rgba(255,214,150,0.7)";
+    ctx.textAlign = "right";
+    ctx.fillText(`下压: ${Math.ceil(this.pushTimer)}s`, w - 18, 26);
+
+    // 游戏结束提示
+    if (this.over) {
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.fillStyle = "rgba(255,110,206,0.9)";
+      ctx.font = "700 32px system-ui";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("游戏结束", w / 2, h / 2 - 30);
+
+      ctx.fillStyle = "rgba(255,255,255,0.8)";
+      ctx.font = "600 18px system-ui";
+      ctx.fillText(`最终得分: ${this.score}`, w / 2, h / 2 + 10);
+
+      ctx.fillStyle = "rgba(255,255,255,0.5)";
+      ctx.font = "400 14px system-ui";
+      ctx.fillText("按 R 重新开始", w / 2, h / 2 + 45);
+    }
+
+    ctx.restore();
+  }
+}
+
 function drawMenuBackdrop(ctx, w, h) {
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
@@ -2556,6 +3789,9 @@ const games = {
   fall: new FallGame(core),
   racing: new RacingGame(core),
   snake: new SnakeGame(core),
+  memory: new MemoryGame(core),
+  game2048: new Game2048(core),
+  bubble: new BubbleShooter(core),
 };
 
 async function startGameSafe(game) {
@@ -2574,6 +3810,9 @@ const btnBilliards = document.getElementById("btnBilliards");
 const btnFall = document.getElementById("btnFall");
 const btnRacing = document.getElementById("btnRacing");
 const btnSnake = document.getElementById("btnSnake");
+const btnMemory = document.getElementById("btnMemory");
+const btn2048 = document.getElementById("btn2048");
+const btnBubble = document.getElementById("btnBubble");
 
 btnTank.addEventListener("click", () => startGameSafe(games.tank));
 btnTetris.addEventListener("click", () => startGameSafe(games.tetris));
@@ -2582,6 +3821,9 @@ btnBilliards.addEventListener("click", () => startGameSafe(games.billiards));
 btnFall.addEventListener("click", () => startGameSafe(games.fall));
 btnRacing.addEventListener("click", () => startGameSafe(games.racing));
 btnSnake.addEventListener("click", () => startGameSafe(games.snake));
+btnMemory.addEventListener("click", () => startGameSafe(games.memory));
+btn2048.addEventListener("click", () => startGameSafe(games.game2048));
+btnBubble.addEventListener("click", () => startGameSafe(games.bubble));
 
 window.addEventListener("keydown", async (e) => {
   if (core.mode !== "menu") return;
@@ -2605,6 +3847,15 @@ window.addEventListener("keydown", async (e) => {
   }
   if (["Digit7", "Numpad7"].includes(e.code)) {
     startGameSafe(games.snake);
+  }
+  if (["Digit8", "Numpad8"].includes(e.code)) {
+    startGameSafe(games.memory);
+  }
+  if (["Digit9", "Numpad9"].includes(e.code)) {
+    startGameSafe(games.game2048);
+  }
+  if (["Digit0", "Numpad0"].includes(e.code)) {
+    startGameSafe(games.bubble);
   }
 });
 
